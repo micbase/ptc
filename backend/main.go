@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed dist
+//go:embed all:dist
 var frontendFS embed.FS
 
 func main() {

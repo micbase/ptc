@@ -2,7 +2,6 @@ node_modules/
 frontend/dist/
 backend/dist/*
 !backend/dist/.gitkeep
-!backend/dist/index.html
 *.exe
 ptc
 .DS_Store
