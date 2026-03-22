@@ -34,7 +34,7 @@ func queryPlans(ctx context.Context, pool *pgxpool.Pool, date string) ([]Electri
 	}
 	defer rows.Close()
 
-	var plans []ElectricityRate
+	plans := make([]ElectricityRate, 0)
 	for rows.Next() {
 		var r ElectricityRate
 		err := rows.Scan(
