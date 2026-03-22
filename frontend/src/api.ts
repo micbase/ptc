@@ -5,7 +5,7 @@ const BASE = '/api'
 export async function fetchPlans(date: string): Promise<ElectricityRate[]> {
   const res = await fetch(`${BASE}/plans?date=${date}`)
   if (!res.ok) throw new Error(await res.text())
-  return res.json()
+  return (await res.json()) ?? []
 }
 
 export async function fetchChartData(type: 'best' | 'best_3m' | 'variable'): Promise<ChartPoint[]> {

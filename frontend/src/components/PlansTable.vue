@@ -22,7 +22,7 @@ function toggleSort(key: SortKey) {
 }
 
 const sorted = computed(() => {
-  const copy = [...props.plans]
+  const copy = [...(props.plans ?? [])]
   const dir = sortAsc.value ? 1 : -1
   copy.sort((a, b) => {
     const av = a[sortKey.value]
@@ -39,9 +39,7 @@ function sortIndicator(key: SortKey) {
 }
 
 const columns: { key: SortKey; label: string; type: 'string' | 'number' | 'boolean' | 'link' | 'tag' | 'date' }[] = [
-  { key: 'id', label: 'ID', type: 'number' },
   { key: 'fetch_date', label: 'Fetch Date', type: 'date' },
-  { key: 'id_key', label: 'ID Key', type: 'string' },
   { key: 'tdu_company_name', label: 'TDU Company', type: 'string' },
   { key: 'rep_company', label: 'Rep Company', type: 'string' },
   { key: 'product', label: 'Product', type: 'string' },
@@ -70,7 +68,6 @@ const columns: { key: SortKey; label: string; type: 'string' | 'number' | 'boole
   { key: 'min_usage_fees_credits', label: 'Min Usage Fees/Credits', type: 'boolean' },
   { key: 'language', label: 'Language', type: 'tag' },
   { key: 'rating', label: 'Rating', type: 'number' },
-  { key: 'processed_at', label: 'Processed At', type: 'date' },
 ]
 
 function rateTypeBadge(type: string) {
@@ -114,7 +111,13 @@ function languageBadge(lang: string) {
           :key="plan.id"
           class="border-b border-gray-100 hover:bg-gray-50"
         >
-          <td v-for="col in columns" :key="col.key" class="px-3 py-2 whitespace-nowrap">
+          <td
+            v-for="col in columns"
+            :key="col.key"
+            :class="(col.type === 'string' || col.type === 'date')
+              ? 'px-3 py-2 max-w-xs overflow-hidden'
+              : 'px-3 py-2 whitespace-nowrap'"
+          >
             <!-- Link columns -->
             <template v-if="col.type === 'link'">
               <a
@@ -148,12 +151,12 @@ function languageBadge(lang: string) {
             </template>
             <!-- Default: string/date -->
             <template v-else>
-              <span :title="String(plan[col.key])">{{ plan[col.key] }}</span>
+              <span class="block truncate" :title="String(plan[col.key] ?? '')">{{ plan[col.key] }}</span>
             </template>
           </td>
         </tr>
       </tbody>
     </table>
-    <p v-if="plans.length === 0" class="text-center text-gray-500 py-8">No plans found for this date.</p>
+    <p v-if="(plans ?? []).length === 0" class="text-center text-gray-500 py-8">No plans found for this date.</p>
   </div>
 </template>
