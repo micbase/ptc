@@ -25,28 +25,40 @@ const option = computed(() => ({
     trigger: 'axis',
   },
   legend: {
-    bottom: 0,
+    top: 0,
     data: ['Best Plan Rate', 'Best 3M Plan Rate', 'Best Variable Rate'],
   },
   grid: {
-    left: 50,
+    left: 60,
     right: 20,
-    top: 20,
-    bottom: 60,
+    top: 40,
+    bottom: 70,
   },
   xAxis: {
     type: 'category',
     data: props.best.map((p) => p.fetch_date),
-    axisLabel: { rotate: 45 },
+    axisLabel: {
+      rotate: 45,
+      formatter: (value: string) => {
+        // Show label only on the first day of each month
+        if (value.endsWith('-01')) {
+          return value.slice(0, 7)
+        }
+        return ''
+      },
+      interval: 0,
+    },
   },
   yAxis: {
     type: 'value',
     name: '¢/kWh',
+    nameLocation: 'middle',
+    nameGap: 45,
     axisLabel: { formatter: '{value}' },
   },
   dataZoom: [
     { type: 'inside', start: 0, end: 100 },
-    { type: 'slider', start: 0, end: 100 },
+    { type: 'slider', start: 0, end: 100, bottom: 10 },
   ],
   series: [
     {
@@ -78,5 +90,5 @@ const option = computed(() => ({
 </script>
 
 <template>
-  <v-chart :option="option" autoresize style="height: 400px" />
+  <v-chart :option="option" autoresize style="height: 450px" />
 </template>
