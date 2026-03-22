@@ -1,6 +1,5 @@
 node_modules/
-dist/
-!backend/dist/
+frontend/dist/
 backend/dist/*
 !backend/dist/.gitkeep
 *.exe
