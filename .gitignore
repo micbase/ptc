@@ -1,5 +1,6 @@
 node_modules/
 dist/
+!backend/dist/
 *.exe
 ptc
 .DS_Store
