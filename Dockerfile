@@ -5,7 +5,7 @@ COPY frontend/ .
 RUN npm ci && npm run build
 
 # Stage 2: Build backend
-FROM golang:1.24-alpine AS backend
+FROM golang:1.26-alpine AS backend
 WORKDIR /app
 COPY backend/ ./backend/
 COPY --from=frontend /app/frontend/dist ./backend/dist
