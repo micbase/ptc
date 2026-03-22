@@ -50,7 +50,7 @@ watch(date, loadPlans)
 </script>
 
 <template>
-  <div class="max-w-7xl mx-auto px-4 py-6">
+  <div class="w-full px-4 py-6">
     <h1 class="text-2xl font-bold text-gray-900 mb-6">Power to Choose — ONCOR Rate Comparison</h1>
 
     <div class="bg-white rounded-lg shadow p-4 mb-6">
