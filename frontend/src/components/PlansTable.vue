@@ -114,7 +114,7 @@ function languageBadge(lang: string) {
           <td
             v-for="col in columns"
             :key="col.key"
-            :class="col.key === 'special_terms'
+            :class="(col.type === 'string' || col.type === 'date')
               ? 'px-3 py-2 max-w-xs overflow-hidden'
               : 'px-3 py-2 whitespace-nowrap'"
           >
@@ -151,10 +151,7 @@ function languageBadge(lang: string) {
             </template>
             <!-- Default: string/date -->
             <template v-else>
-              <span
-                :title="String(plan[col.key] ?? '')"
-                :class="col.key === 'special_terms' ? 'block truncate' : ''"
-              >{{ plan[col.key] }}</span>
+              <span class="block truncate" :title="String(plan[col.key] ?? '')">{{ plan[col.key] }}</span>
             </template>
           </td>
         </tr>
