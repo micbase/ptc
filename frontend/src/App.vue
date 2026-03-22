@@ -11,6 +11,7 @@ const best = ref<ChartPoint[]>([])
 const best3m = ref<ChartPoint[]>([])
 const variable = ref<ChartPoint[]>([])
 const loading = ref(false)
+const chartLoading = ref(false)
 
 async function loadPlans() {
   loading.value = true
@@ -26,6 +27,7 @@ async function loadPlans() {
 
 onMounted(() => {
   // Load charts independently
+  chartLoading.value = true
   Promise.all([
     fetchChartData('best'),
     fetchChartData('best_3m'),
@@ -35,6 +37,7 @@ onMounted(() => {
     best3m.value = b3
     variable.value = v
   }).catch(e => console.error('Failed to load chart data:', e))
+  .finally(() => { chartLoading.value = false })
 
   // Load latest date, then plans
   fetchLatestDate().then(d => {
@@ -54,7 +57,7 @@ watch(date, loadPlans)
     <h1 class="text-2xl font-bold text-gray-900 mb-6">Power to Choose — ONCOR Rate Comparison</h1>
 
     <div class="bg-white rounded-lg shadow p-4 mb-6">
-      <RateChart :best="best" :best3m="best3m" :variable="variable" />
+      <RateChart :best="best" :best3m="best3m" :variable="variable" :loading="chartLoading" />
     </div>
 
     <div class="flex items-center gap-4 mb-4">
@@ -64,12 +67,11 @@ watch(date, loadPlans)
         type="date"
         class="border border-gray-300 rounded px-3 py-1.5 text-sm"
       />
-      <span v-if="loading" class="text-sm text-gray-500">Loading...</span>
-      <span v-else class="text-sm text-gray-500">{{ plans.length }} plans</span>
+      <span class="text-sm text-gray-500">{{ loading ? '' : `${plans.length} plans` }}</span>
     </div>
 
     <div class="bg-white rounded-lg shadow">
-      <PlansTable :plans="plans" />
+      <PlansTable :plans="plans" :loading="loading" />
     </div>
   </div>
 </template>
