@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -21,10 +21,14 @@ const props = defineProps<{
   loading?: boolean
 }>()
 
+const GRID_LEFT = 60
+const GRID_RIGHT = 20
+
 const chartRef = ref()
 const dragStart = ref<number | null>(null)
 const dragCurrent = ref<number | null>(null)
 const isDragging = ref(false)
+let listenerDom: HTMLElement | null = null
 
 const selectionStyle = computed(() => {
   if (!isDragging.value || dragStart.value === null || dragCurrent.value === null) {
@@ -45,8 +49,8 @@ const selectionStyle = computed(() => {
   }
 })
 
-function startDrag(e: MouseEvent) {
-  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+function onMouseDown(e: MouseEvent) {
+  const dom = listenerDom
   if (!dom) return
   const rect = dom.getBoundingClientRect()
   dragStart.value = e.clientX - rect.left
@@ -54,31 +58,37 @@ function startDrag(e: MouseEvent) {
   isDragging.value = false
 }
 
-function moveDrag(e: MouseEvent) {
+function onMouseMove(e: MouseEvent) {
   if (dragStart.value === null) return
-  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+  const dom = listenerDom
   if (!dom) return
   const rect = dom.getBoundingClientRect()
   dragCurrent.value = e.clientX - rect.left
   if (Math.abs(dragCurrent.value - dragStart.value) > 4) isDragging.value = true
 }
 
-function endDrag() {
+function onMouseUp() {
   if (isDragging.value && dragStart.value !== null && dragCurrent.value !== null) {
-    const x1 = Math.min(dragStart.value, dragCurrent.value)
-    const x2 = Math.max(dragStart.value, dragCurrent.value)
-    const chart = chartRef.value
-    if (chart) {
-      // convertFromPixel returns the category index for a category x-axis
-      const i1 = chart.convertFromPixel({ xAxisIndex: 0 }, x1) as number | null
-      const i2 = chart.convertFromPixel({ xAxisIndex: 0 }, x2) as number | null
-      const dataLen = props.best.length
-      if (i1 != null && i2 != null && dataLen > 0) {
-        const start = Math.max(0, (Math.min(i1, i2) / (dataLen - 1)) * 100)
-        const end = Math.min(100, (Math.max(i1, i2) / (dataLen - 1)) * 100)
-        if (end > start + 0.5) {
-          chart.dispatchAction({ type: 'dataZoom', start, end })
-        }
+    const dom = listenerDom
+    if (dom && chartRef.value) {
+      const x1 = Math.min(dragStart.value, dragCurrent.value)
+      const x2 = Math.max(dragStart.value, dragCurrent.value)
+
+      const plotWidth = dom.clientWidth - GRID_LEFT - GRID_RIGHT
+      const cx1 = Math.max(0, Math.min(plotWidth, x1 - GRID_LEFT))
+      const cx2 = Math.max(0, Math.min(plotWidth, x2 - GRID_LEFT))
+
+      // Get current dataZoom range so nested zooms work correctly
+      const opts = chartRef.value.getOption() as any
+      const dz = opts?.dataZoom?.[0]
+      const curStart: number = dz?.start ?? 0
+      const curEnd: number = dz?.end ?? 100
+
+      const newStart = curStart + (cx1 / plotWidth) * (curEnd - curStart)
+      const newEnd = curStart + (cx2 / plotWidth) * (curEnd - curStart)
+
+      if (newEnd - newStart > 0.5) {
+        chartRef.value.dispatchAction({ type: 'dataZoom', start: newStart, end: newEnd })
       }
     }
   }
@@ -87,24 +97,35 @@ function endDrag() {
   isDragging.value = false
 }
 
+function attachMouseDown() {
+  const dom = chartRef.value?.getDom() as HTMLElement | null
+  if (!dom || listenerDom === dom) return
+  listenerDom?.removeEventListener('mousedown', onMouseDown)
+  dom.addEventListener('mousedown', onMouseDown)
+  listenerDom = dom
+}
+
+// Called by @finished on the chart — fires after first render
+function onChartFinished() {
+  attachMouseDown()
+}
+
 function resetZoom() {
   chartRef.value?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 })
 }
 
 onMounted(() => {
-  // Attach mousedown to the canvas inside the chart so it fires before ZRender
-  // Attach mousemove/mouseup to window so drag works even outside the chart bounds
-  const dom = chartRef.value?.getDom() as HTMLElement | undefined
-  dom?.addEventListener('mousedown', startDrag)
-  window.addEventListener('mousemove', moveDrag)
-  window.addEventListener('mouseup', endDrag)
+  // Try immediately, and again after nextTick in case chart isn't ready yet
+  nextTick(attachMouseDown)
+  window.addEventListener('mousemove', onMouseMove)
+  window.addEventListener('mouseup', onMouseUp)
 })
 
 onUnmounted(() => {
-  const dom = chartRef.value?.getDom() as HTMLElement | undefined
-  dom?.removeEventListener('mousedown', startDrag)
-  window.removeEventListener('mousemove', moveDrag)
-  window.removeEventListener('mouseup', endDrag)
+  listenerDom?.removeEventListener('mousedown', onMouseDown)
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
+  listenerDom = null
 })
 
 const option = computed(() => ({
@@ -116,8 +137,8 @@ const option = computed(() => ({
     data: ['Best Plan Rate', 'Best 3M Plan Rate', 'Best Variable Rate'],
   },
   grid: {
-    left: 60,
-    right: 20,
+    left: GRID_LEFT,
+    right: GRID_RIGHT,
     top: 40,
     bottom: 50,
   },
@@ -188,6 +209,12 @@ const option = computed(() => ({
     >
       Reset zoom
     </button>
-    <v-chart ref="chartRef" :option="option" autoresize style="height: 450px" />
+    <v-chart
+      ref="chartRef"
+      :option="option"
+      autoresize
+      style="height: 450px"
+      @finished="onChartFinished"
+    />
   </div>
 </template>
