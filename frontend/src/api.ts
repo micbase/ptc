@@ -20,3 +20,9 @@ export async function fetchLatestDate(): Promise<string> {
   const data = await res.json()
   return data.date
 }
+
+export async function triggerFetch(force = false): Promise<{ inserted: number; skipped: boolean; message: string }> {
+  const res = await fetch(`${BASE}/fetch${force ? '?force=true' : ''}`, { method: 'POST' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}

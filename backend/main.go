@@ -37,6 +37,7 @@ func main() {
 	r.Get("/api/plans", handlePlans(pool))
 	r.Get("/api/charts", handleCharts(pool))
 	r.Get("/api/latest-date", handleLatestDate(pool))
+	r.Post("/api/fetch", handleFetch(pool))
 
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
