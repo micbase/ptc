@@ -50,6 +50,7 @@ const selectionStyle = computed(() => {
 })
 
 function onMouseDown(e: MouseEvent) {
+  console.log('[zoom] mousedown clientX=', e.clientX)
   const dom = listenerDom
   if (!dom) return
   const rect = dom.getBoundingClientRect()
@@ -68,6 +69,7 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseUp() {
+  console.log('[zoom] mouseup isDragging=', isDragging.value, 'start=', dragStart.value, 'current=', dragCurrent.value)
   if (isDragging.value && dragStart.value !== null && dragCurrent.value !== null) {
     const dom = listenerDom
     if (dom && chartRef.value) {
@@ -78,7 +80,6 @@ function onMouseUp() {
       const cx1 = Math.max(0, Math.min(plotWidth, x1 - GRID_LEFT))
       const cx2 = Math.max(0, Math.min(plotWidth, x2 - GRID_LEFT))
 
-      // Get current dataZoom range so nested zooms work correctly
       const opts = chartRef.value.getOption() as any
       const dz = opts?.dataZoom?.[0]
       const curStart: number = dz?.start ?? 0
@@ -86,6 +87,8 @@ function onMouseUp() {
 
       const newStart = curStart + (cx1 / plotWidth) * (curEnd - curStart)
       const newEnd = curStart + (cx2 / plotWidth) * (curEnd - curStart)
+
+      console.log('[zoom] plotWidth=', plotWidth, 'cx1=', cx1, 'cx2=', cx2, 'curStart=', curStart, 'curEnd=', curEnd, '→', newStart, newEnd)
 
       if (newEnd - newStart > 0.5) {
         chartRef.value.dispatchAction({ type: 'dataZoom', start: newStart, end: newEnd })
@@ -99,14 +102,17 @@ function onMouseUp() {
 
 function attachMouseDown() {
   const dom = chartRef.value?.getDom() as HTMLElement | null
+  console.log('[zoom] attachMouseDown dom=', dom)
   if (!dom || listenerDom === dom) return
   listenerDom?.removeEventListener('mousedown', onMouseDown)
   dom.addEventListener('mousedown', onMouseDown)
   listenerDom = dom
+  console.log('[zoom] mousedown listener attached to', dom.tagName, dom.className)
 }
 
 // Called by @finished on the chart — fires after first render
 function onChartFinished() {
+  console.log('[zoom] chart finished')
   attachMouseDown()
 }
 
