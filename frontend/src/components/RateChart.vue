@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -14,8 +14,14 @@ import type { ChartPoint } from '../types'
 
 use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer])
 
+const props = defineProps<{
+  best: ChartPoint[]
+  best3m: ChartPoint[]
+  variable: ChartPoint[]
+  loading?: boolean
+}>()
+
 const chartRef = ref()
-const containerRef = ref<HTMLElement>()
 const dragStart = ref<number | null>(null)
 const dragCurrent = ref<number | null>(null)
 const isDragging = ref(false)
@@ -35,35 +41,45 @@ const selectionStyle = computed(() => {
     background: 'rgba(114, 164, 233, 0.2)',
     border: '1px solid rgba(114, 164, 233, 0.8)',
     pointerEvents: 'none' as const,
-    zIndex: 10,
+    zIndex: 20,
   }
 })
 
-function onMouseDown(e: MouseEvent) {
-  const rect = containerRef.value!.getBoundingClientRect()
+function startDrag(e: MouseEvent) {
+  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+  if (!dom) return
+  const rect = dom.getBoundingClientRect()
   dragStart.value = e.clientX - rect.left
-  dragCurrent.value = null
+  dragCurrent.value = dragStart.value
   isDragging.value = false
 }
 
-function onMouseMove(e: MouseEvent) {
+function moveDrag(e: MouseEvent) {
   if (dragStart.value === null) return
-  const rect = containerRef.value!.getBoundingClientRect()
+  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+  if (!dom) return
+  const rect = dom.getBoundingClientRect()
   dragCurrent.value = e.clientX - rect.left
-  if (Math.abs(dragCurrent.value - dragStart.value) > 5) isDragging.value = true
+  if (Math.abs(dragCurrent.value - dragStart.value) > 4) isDragging.value = true
 }
 
-function onMouseUp() {
+function endDrag() {
   if (isDragging.value && dragStart.value !== null && dragCurrent.value !== null) {
     const x1 = Math.min(dragStart.value, dragCurrent.value)
     const x2 = Math.max(dragStart.value, dragCurrent.value)
-    const dataLen = props.best.length
-    const idx1 = chartRef.value?.convertFromPixel({ xAxisIndex: 0 }, x1) as number ?? 0
-    const idx2 = chartRef.value?.convertFromPixel({ xAxisIndex: 0 }, x2) as number ?? dataLen
-    const start = Math.max(0, (idx1 / dataLen) * 100)
-    const end = Math.min(100, (idx2 / dataLen) * 100)
-    if (end > start + 0.5) {
-      chartRef.value?.dispatchAction({ type: 'dataZoom', start, end })
+    const chart = chartRef.value
+    if (chart) {
+      // convertFromPixel returns the category index for a category x-axis
+      const i1 = chart.convertFromPixel({ xAxisIndex: 0 }, x1) as number | null
+      const i2 = chart.convertFromPixel({ xAxisIndex: 0 }, x2) as number | null
+      const dataLen = props.best.length
+      if (i1 != null && i2 != null && dataLen > 0) {
+        const start = Math.max(0, (Math.min(i1, i2) / (dataLen - 1)) * 100)
+        const end = Math.min(100, (Math.max(i1, i2) / (dataLen - 1)) * 100)
+        if (end > start + 0.5) {
+          chart.dispatchAction({ type: 'dataZoom', start, end })
+        }
+      }
     }
   }
   dragStart.value = null
@@ -75,12 +91,21 @@ function resetZoom() {
   chartRef.value?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 })
 }
 
-const props = defineProps<{
-  best: ChartPoint[]
-  best3m: ChartPoint[]
-  variable: ChartPoint[]
-  loading?: boolean
-}>()
+onMounted(() => {
+  // Attach mousedown to the canvas inside the chart so it fires before ZRender
+  // Attach mousemove/mouseup to window so drag works even outside the chart bounds
+  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+  dom?.addEventListener('mousedown', startDrag)
+  window.addEventListener('mousemove', moveDrag)
+  window.addEventListener('mouseup', endDrag)
+})
+
+onUnmounted(() => {
+  const dom = chartRef.value?.getDom() as HTMLElement | undefined
+  dom?.removeEventListener('mousedown', startDrag)
+  window.removeEventListener('mousemove', moveDrag)
+  window.removeEventListener('mouseup', endDrag)
+})
 
 const option = computed(() => ({
   tooltip: {
@@ -148,15 +173,7 @@ const option = computed(() => ({
 </script>
 
 <template>
-  <div
-    ref="containerRef"
-    class="relative select-none"
-    style="height: 450px; cursor: crosshair"
-    @mousedown="onMouseDown"
-    @mousemove="onMouseMove"
-    @mouseup="onMouseUp"
-    @mouseleave="onMouseUp"
-  >
+  <div class="relative select-none" style="height: 450px; cursor: crosshair">
     <div v-if="loading" class="absolute inset-0 z-10 flex items-center justify-center bg-white/70">
       <svg class="animate-spin h-8 w-8 text-indigo-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
@@ -165,7 +182,7 @@ const option = computed(() => ({
     </div>
     <div :style="selectionStyle" />
     <button
-      class="absolute top-1 right-1 z-20 px-2 py-0.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded bg-white/90 hover:bg-white"
+      class="absolute top-1 right-1 z-30 px-2 py-0.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded bg-white/90 hover:bg-white"
       @click="resetZoom"
       @mousedown.stop
     >
