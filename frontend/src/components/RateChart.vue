@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, nextTick } from 'vue'
+import { computed, ref } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -17,15 +17,13 @@ use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomCompon
 
 const chartRef = ref()
 
-onMounted(() => {
-  nextTick(() => {
-    chartRef.value?.chart?.dispatchAction({
-      type: 'takeGlobalCursor',
-      key: 'dataZoomSelect',
-      dataZoomSelectActive: true,
-    })
+function onChartFinished() {
+  chartRef.value?.dispatchAction({
+    type: 'takeGlobalCursor',
+    key: 'dataZoomSelect',
+    dataZoomSelectActive: true,
   })
-})
+}
 
 const props = defineProps<{
   best: ChartPoint[]
@@ -121,6 +119,6 @@ const option = computed(() => ({
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
       </svg>
     </div>
-    <v-chart ref="chartRef" :option="option" autoresize style="height: 450px" />
+    <v-chart ref="chartRef" :option="option" autoresize style="height: 450px" @finished="onChartFinished" />
   </div>
 </template>
