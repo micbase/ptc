@@ -8,11 +8,12 @@ import {
   TooltipComponent,
   LegendComponent,
   DataZoomComponent,
+  ToolboxComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import type { ChartPoint } from '../types'
 
-use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer])
+use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, ToolboxComponent, CanvasRenderer])
 
 const props = defineProps<{
   best: ChartPoint[]
@@ -25,6 +26,16 @@ const option = computed(() => ({
   tooltip: {
     trigger: 'axis',
   },
+  toolbox: {
+    right: 20,
+    top: 0,
+    feature: {
+      dataZoom: {
+        yAxisIndex: 'none',
+        title: { zoom: 'Zoom', back: 'Reset zoom' },
+      },
+    },
+  },
   legend: {
     top: 0,
     data: ['Best Plan Rate', 'Best 3M Plan Rate', 'Best Variable Rate'],
@@ -33,7 +44,7 @@ const option = computed(() => ({
     left: 60,
     right: 20,
     top: 40,
-    bottom: 70,
+    bottom: 60,
   },
   xAxis: {
     type: 'category',
