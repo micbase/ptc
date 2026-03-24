@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, ref, nextTick, onUnmounted } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { LineChart } from 'echarts/charts'
@@ -49,17 +49,18 @@ const selectionStyle = computed(() => {
   }
 })
 
-function onMouseDown(e: MouseEvent) {
-  console.log('[zoom] mousedown clientX=', e.clientX)
+function onPointerDown(e: PointerEvent) {
   const dom = listenerDom
   if (!dom) return
+  // Capture all future pointer events on this element, even outside its bounds
+  dom.setPointerCapture(e.pointerId)
   const rect = dom.getBoundingClientRect()
   dragStart.value = e.clientX - rect.left
   dragCurrent.value = dragStart.value
   isDragging.value = false
 }
 
-function onMouseMove(e: MouseEvent) {
+function onPointerMove(e: PointerEvent) {
   if (dragStart.value === null) return
   const dom = listenerDom
   if (!dom) return
@@ -68,8 +69,7 @@ function onMouseMove(e: MouseEvent) {
   if (Math.abs(dragCurrent.value - dragStart.value) > 4) isDragging.value = true
 }
 
-function onMouseUp() {
-  console.log('[zoom] mouseup isDragging=', isDragging.value, 'start=', dragStart.value, 'current=', dragCurrent.value)
+function onPointerUp(e: PointerEvent) {
   if (isDragging.value && dragStart.value !== null && dragCurrent.value !== null) {
     const dom = listenerDom
     if (dom && chartRef.value) {
@@ -88,11 +88,11 @@ function onMouseUp() {
       const newStart = curStart + (cx1 / plotWidth) * (curEnd - curStart)
       const newEnd = curStart + (cx2 / plotWidth) * (curEnd - curStart)
 
-      console.log('[zoom] plotWidth=', plotWidth, 'cx1=', cx1, 'cx2=', cx2, 'curStart=', curStart, 'curEnd=', curEnd, '→', newStart, newEnd)
-
       if (newEnd - newStart > 0.5) {
         chartRef.value.dispatchAction({ type: 'dataZoom', start: newStart, end: newEnd })
       }
+
+      try { dom.releasePointerCapture(e.pointerId) } catch (_) { /* ignore */ }
     }
   }
   dragStart.value = null
@@ -100,38 +100,35 @@ function onMouseUp() {
   isDragging.value = false
 }
 
-function attachMouseDown() {
+function attachListeners() {
   const dom = chartRef.value?.getDom() as HTMLElement | null
-  console.log('[zoom] attachMouseDown dom=', dom)
   if (!dom || listenerDom === dom) return
-  listenerDom?.removeEventListener('mousedown', onMouseDown)
-  dom.addEventListener('mousedown', onMouseDown)
+  if (listenerDom) {
+    listenerDom.removeEventListener('pointerdown', onPointerDown)
+    listenerDom.removeEventListener('pointermove', onPointerMove)
+    listenerDom.removeEventListener('pointerup', onPointerUp)
+  }
+  dom.addEventListener('pointerdown', onPointerDown)
+  dom.addEventListener('pointermove', onPointerMove)
+  dom.addEventListener('pointerup', onPointerUp)
   listenerDom = dom
-  console.log('[zoom] mousedown listener attached to', dom.tagName, dom.className)
 }
 
-// Called by @finished on the chart — fires after first render
 function onChartFinished() {
-  console.log('[zoom] chart finished')
-  attachMouseDown()
+  // @finished fires after every render; use it to ensure listeners are attached
+  if (!listenerDom) nextTick(attachListeners)
 }
 
 function resetZoom() {
   chartRef.value?.dispatchAction({ type: 'dataZoom', start: 0, end: 100 })
 }
 
-onMounted(() => {
-  // Try immediately, and again after nextTick in case chart isn't ready yet
-  nextTick(attachMouseDown)
-  window.addEventListener('mousemove', onMouseMove)
-  window.addEventListener('mouseup', onMouseUp)
-})
-
 onUnmounted(() => {
-  listenerDom?.removeEventListener('mousedown', onMouseDown)
-  window.removeEventListener('mousemove', onMouseMove)
-  window.removeEventListener('mouseup', onMouseUp)
-  listenerDom = null
+  if (listenerDom) {
+    listenerDom.removeEventListener('pointerdown', onPointerDown)
+    listenerDom.removeEventListener('pointermove', onPointerMove)
+    listenerDom.removeEventListener('pointerup', onPointerUp)
+  }
 })
 
 const option = computed(() => ({
@@ -211,7 +208,7 @@ const option = computed(() => ({
     <button
       class="absolute top-1 right-1 z-30 px-2 py-0.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded bg-white/90 hover:bg-white"
       @click="resetZoom"
-      @mousedown.stop
+      @pointerdown.stop
     >
       Reset zoom
     </button>
