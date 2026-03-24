@@ -1,18 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import VChart from 'vue-echarts'
-import { use } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { computed, ref } from 'vue'
+import { Line } from 'vue-chartjs'
 import {
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-  DataZoomComponent,
-} from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
+  Chart as ChartJS,
+  LineElement,
+  PointElement,
+  LinearScale,
+  TimeScale,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+import 'chartjs-adapter-date-fns'
+import ZoomPlugin from 'chartjs-plugin-zoom'
 import type { ChartPoint } from '../types'
 
-use([LineChart, GridComponent, TooltipComponent, LegendComponent, DataZoomComponent, CanvasRenderer])
+ChartJS.register(LineElement, PointElement, LinearScale, TimeScale, Tooltip, Legend, ZoomPlugin)
 
 const props = defineProps<{
   best: ChartPoint[]
@@ -21,73 +23,95 @@ const props = defineProps<{
   loading?: boolean
 }>()
 
-const option = computed(() => ({
-  tooltip: {
-    trigger: 'axis',
-  },
-  legend: {
-    top: 0,
-    data: ['Best Plan Rate', 'Best 3M Plan Rate', 'Best Variable Rate'],
-  },
-  grid: {
-    left: 60,
-    right: 20,
-    top: 40,
-    bottom: 70,
-  },
-  xAxis: {
-    type: 'category',
-    data: props.best.map((p) => p.fetch_date),
-    axisLabel: {
-      rotate: 45,
-      formatter: (value: string) => {
-        // Show label only on the first day of each month
-        if (value.endsWith('-01')) {
-          return value.slice(0, 7)
-        }
-        return ''
-      },
-      interval: 0,
-    },
-  },
-  yAxis: {
-    type: 'value',
-    name: '¢/kWh',
-    nameLocation: 'middle',
-    nameGap: 45,
-    axisLabel: { formatter: '{value}' },
-  },
-  dataZoom: [
-    { type: 'inside', start: 0, end: 100 },
-    { type: 'slider', start: 0, end: 100, bottom: 10 },
-  ],
-  series: [
+const lineRef = ref<InstanceType<typeof Line> | null>(null)
+
+const data = computed(() => ({
+  datasets: [
     {
-      name: 'Best Plan Rate',
-      type: 'line',
-      data: props.best.map((p) => p.kwh1000),
-      itemStyle: { color: '#7c3aed' },
-      symbol: 'none',
-      smooth: true,
+      label: 'Best Plan Rate',
+      data: props.best.map((p) => ({ x: p.fetch_date, y: p.kwh1000 })) as any,
+      borderColor: '#7c3aed',
+      backgroundColor: '#7c3aed',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
     },
     {
-      name: 'Best 3M Plan Rate',
-      type: 'line',
-      data: props.best3m.map((p) => p.kwh1000),
-      itemStyle: { color: '#dc2626' },
-      symbol: 'none',
-      smooth: true,
+      label: 'Best 3M Plan Rate',
+      data: props.best3m.map((p) => ({ x: p.fetch_date, y: p.kwh1000 })) as any,
+      borderColor: '#dc2626',
+      backgroundColor: '#dc2626',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
     },
     {
-      name: 'Best Variable Rate',
-      type: 'line',
-      data: props.variable.map((p) => p.kwh1000),
-      itemStyle: { color: '#16a34a' },
-      symbol: 'none',
-      smooth: true,
+      label: 'Best Variable Rate',
+      data: props.variable.map((p) => ({ x: p.fetch_date, y: p.kwh1000 })) as any,
+      borderColor: '#16a34a',
+      backgroundColor: '#16a34a',
+      borderWidth: 2,
+      pointRadius: 0,
+      tension: 0.3,
     },
   ],
 }))
+
+const options = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: {
+    mode: 'index' as const,
+    intersect: false,
+  },
+  scales: {
+    x: {
+      type: 'time' as const,
+      time: {
+        minUnit: 'day' as const,
+        tooltipFormat: 'yyyy-MM-dd',
+        displayFormats: {
+          day: 'MM-dd',
+          week: 'MM-dd',
+          month: 'yyyy-MM',
+          quarter: 'yyyy-MM',
+          year: 'yyyy',
+        },
+      },
+      ticks: {
+        maxRotation: 45,
+        autoSkip: true,
+        maxTicksLimit: 12,
+      },
+    },
+    y: {
+      title: { display: true, text: '¢/kWh' },
+    },
+  },
+  plugins: {
+    legend: { position: 'top' as const },
+    tooltip: { enabled: true },
+    zoom: {
+      zoom: {
+        drag: {
+          enabled: true,
+          backgroundColor: 'rgba(114,164,233,0.2)',
+          borderColor: 'rgba(114,164,233,0.8)',
+          borderWidth: 1,
+        },
+        mode: 'x' as const,
+      },
+      limits: {
+        x: { min: 'original' as const, max: 'original' as const },
+      },
+    },
+  },
+}))
+
+function resetZoom() {
+  // resetZoom is added by chartjs-plugin-zoom at runtime, not in Chart.js types
+  ;(lineRef.value?.chart as any)?.resetZoom()
+}
 </script>
 
 <template>
@@ -98,6 +122,12 @@ const option = computed(() => ({
         <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
       </svg>
     </div>
-    <v-chart :option="option" autoresize style="height: 450px" />
+    <button
+      class="absolute top-1 right-1 z-20 px-2 py-0.5 text-xs text-gray-500 hover:text-gray-800 border border-gray-200 rounded bg-white/90 hover:bg-white"
+      @click="resetZoom"
+    >
+      Reset zoom
+    </button>
+    <Line ref="lineRef" :data="data" :options="options" style="height: 450px" @dblclick="resetZoom" />
   </div>
 </template>
