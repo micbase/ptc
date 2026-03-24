@@ -61,7 +61,12 @@ async function onFetch() {
   try {
     const result = await triggerFetch()
     fetchMessage.value = result.message
-    await loadPlans()
+    const today = new Date().toISOString().slice(0, 10)
+    if (date.value === today) {
+      await loadPlans() // watch won't fire since date didn't change
+    } else {
+      date.value = today // watch triggers loadPlans
+    }
     const [b, b3, v] = await Promise.all([
       fetchChartData('best'),
       fetchChartData('best_3m'),
