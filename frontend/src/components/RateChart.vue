@@ -68,6 +68,7 @@ const options = computed(() => ({
     x: {
       type: 'time' as const,
       time: {
+        minUnit: 'day' as const,
         tooltipFormat: 'yyyy-MM-dd',
         displayFormats: {
           day: 'MM-dd',
@@ -127,6 +128,6 @@ function resetZoom() {
     >
       Reset zoom
     </button>
-    <Line ref="lineRef" :data="data" :options="options" style="height: 450px" />
+    <Line ref="lineRef" :data="data" :options="options" style="height: 450px" @dblclick="resetZoom" />
   </div>
 </template>
