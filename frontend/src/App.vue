@@ -54,25 +54,22 @@ onMounted(() => {
 
 watch(date, loadPlans)
 
-async function onFetch(force = false) {
+async function onFetch() {
   fetching.value = true
   fetchMessage.value = ''
   fetchError.value = ''
   try {
-    const result = await triggerFetch(force)
+    const result = await triggerFetch()
     fetchMessage.value = result.message
-    if (!result.skipped) {
-      // Reload charts and plans after new data inserted
-      await loadPlans()
-      const [b, b3, v] = await Promise.all([
-        fetchChartData('best'),
-        fetchChartData('best_3m'),
-        fetchChartData('variable'),
-      ])
-      best.value = b
-      best3m.value = b3
-      variable.value = v
-    }
+    await loadPlans()
+    const [b, b3, v] = await Promise.all([
+      fetchChartData('best'),
+      fetchChartData('best_3m'),
+      fetchChartData('variable'),
+    ])
+    best.value = b
+    best3m.value = b3
+    variable.value = v
   } catch (e: any) {
     fetchError.value = e.message ?? 'Fetch failed'
   } finally {
@@ -97,20 +94,13 @@ async function onFetch(force = false) {
         class="border border-gray-300 rounded px-3 py-1.5 text-sm"
       />
       <span class="text-sm text-gray-500">{{ loading ? '' : `${plans.length} plans` }}</span>
-      <div class="ml-auto flex items-center gap-2">
+      <div class="ml-auto">
         <button
-          @click="onFetch(false)"
+          @click="onFetch()"
           :disabled="fetching"
           class="px-3 py-1.5 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {{ fetching ? 'Fetching…' : 'Fetch Today\'s Data' }}
-        </button>
-        <button
-          @click="onFetch(true)"
-          :disabled="fetching"
-          class="px-3 py-1.5 text-sm font-medium rounded border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Force Refresh
         </button>
       </div>
     </div>

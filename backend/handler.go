@@ -43,8 +43,7 @@ func handleLatestDate(pool *pgxpool.Pool) http.HandlerFunc {
 
 func handleFetch(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		force := r.URL.Query().Get("force") == "true"
-		result, err := fetchAndInsert(r.Context(), pool, force)
+		result, err := fetchAndInsert(r.Context(), pool)
 		if err != nil {
 			log.Printf("fetch error: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)

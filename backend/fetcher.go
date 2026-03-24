@@ -59,27 +59,12 @@ var boolCols = map[string]bool{
 }
 
 type FetchResult struct {
-	Inserted int    `json:"inserted"`
-	Skipped  bool   `json:"skipped"`
+	Upserted int    `json:"upserted"`
 	Message  string `json:"message"`
 }
 
-func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool, forceUpdate bool) (*FetchResult, error) {
+func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool) (*FetchResult, error) {
 	today := time.Now().Format("2006-01-02")
-
-	if !forceUpdate {
-		var count int
-		err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM electricity_rates WHERE fetch_date = $1`, today).Scan(&count)
-		if err != nil {
-			return nil, fmt.Errorf("checking existing data: %w", err)
-		}
-		if count > 0 {
-			return &FetchResult{
-				Skipped: true,
-				Message: fmt.Sprintf("data for %s already exists (%d rows)", today, count),
-			}, nil
-		}
-	}
 
 	log.Printf("Downloading CSV from %s", ptcCSVURL)
 	resp, err := http.Get(ptcCSVURL)
@@ -135,16 +120,29 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool, forceUpdate bool) (
 		}
 	}
 
-	// Append fetch_date and processed_at
+	// Full column list for INSERT
 	insertCols := append(validCols, "fetch_date", "processed_at")
+
 	placeholders := make([]string, len(insertCols))
 	for i := range insertCols {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 	}
+
+	// ON CONFLICT: update all columns except the conflict key (id_key, fetch_date)
+	conflictKey := map[string]bool{"id_key": true, "fetch_date": true}
+	var setClauses []string
+	for _, col := range insertCols {
+		if !conflictKey[col] {
+			setClauses = append(setClauses, fmt.Sprintf("%s = EXCLUDED.%s", col, col))
+		}
+	}
+
 	query := fmt.Sprintf(
-		`INSERT INTO electricity_rates (%s) VALUES (%s)`,
+		`INSERT INTO electricity_rates (%s) VALUES (%s)
+		 ON CONFLICT (id_key, fetch_date) DO UPDATE SET %s`,
 		strings.Join(insertCols, ", "),
 		strings.Join(placeholders, ", "),
+		strings.Join(setClauses, ", "),
 	)
 
 	processedAt := time.Now()
@@ -155,7 +153,7 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool, forceUpdate bool) (
 	}
 	defer tx.Rollback(ctx)
 
-	inserted := 0
+	upserted := 0
 	for _, record := range records[1:] {
 		args := make([]interface{}, len(insertCols))
 		for j, idx := range validIdxs {
@@ -166,9 +164,7 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool, forceUpdate bool) (
 			col := validCols[j]
 			switch {
 			case numericCols[col]:
-				if val == "" {
-					args[j] = 0.0
-				} else if f, err := strconv.ParseFloat(val, 64); err == nil {
+				if f, err := strconv.ParseFloat(val, 64); err == nil {
 					args[j] = f
 				} else {
 					args[j] = 0.0
@@ -183,18 +179,18 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool, forceUpdate bool) (
 		args[len(validIdxs)+1] = processedAt
 
 		if _, err := tx.Exec(ctx, query, args...); err != nil {
-			return nil, fmt.Errorf("inserting row %d: %w", inserted+1, err)
+			return nil, fmt.Errorf("upserting row %d: %w", upserted+1, err)
 		}
-		inserted++
+		upserted++
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("committing transaction: %w", err)
 	}
 
-	log.Printf("Inserted %d rows for %s", inserted, today)
+	log.Printf("Upserted %d rows for %s", upserted, today)
 	return &FetchResult{
-		Inserted: inserted,
-		Message:  fmt.Sprintf("inserted %d rows for %s", inserted, today),
+		Upserted: upserted,
+		Message:  fmt.Sprintf("upserted %d rows for %s", upserted, today),
 	}, nil
 }
