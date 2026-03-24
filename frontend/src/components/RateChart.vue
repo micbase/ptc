@@ -151,10 +151,9 @@ const option = computed(() => ({
     axisLabel: {
       rotate: 45,
       formatter: (value: string) => {
-        if (value.endsWith('-01')) return value.slice(0, 7)
-        return ''
+        if (value.endsWith('-01')) return value.slice(0, 7) // YYYY-MM at month boundaries
+        return value.slice(5)                               // MM-DD otherwise
       },
-      interval: 0,
     },
   },
   yAxis: {
