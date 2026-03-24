@@ -41,6 +41,19 @@ func handleLatestDate(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+func handleFetch(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		result, err := fetchAndInsert(r.Context(), pool)
+		if err != nil {
+			log.Printf("fetch error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
 func handleCharts(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chartType := r.URL.Query().Get("type")
