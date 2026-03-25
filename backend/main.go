@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,6 +59,29 @@ func main() {
 		fileServer.ServeHTTP(w, r)
 	})
 
+	go scheduleDailyFetch(pool)
+
 	log.Printf("Listening on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+
+// scheduleDailyFetch runs fetchAndInsert every day at 19:10.
+func scheduleDailyFetch(pool *pgxpool.Pool) {
+	for {
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day(), 19, 10, 0, 0, now.Location())
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
+		}
+		log.Printf("Daily fetch scheduled at %s", next.Format(time.RFC3339))
+		time.Sleep(time.Until(next))
+
+		log.Println("Running scheduled daily fetch")
+		result, err := fetchAndInsert(context.Background(), pool)
+		if err != nil {
+			log.Printf("Scheduled fetch error: %v", err)
+		} else {
+			log.Printf("Scheduled fetch complete: %s", result.Message)
+		}
+	}
 }
