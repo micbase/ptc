@@ -14,6 +14,7 @@ RUN go build -o /ptc .
 
 # Stage 3: Runtime
 FROM alpine:3.21
+RUN apk add --no-cache tzdata
 COPY --from=backend /ptc /ptc
 EXPOSE 8080
 CMD ["/ptc"]
