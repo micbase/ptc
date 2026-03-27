@@ -120,6 +120,16 @@ type smtIntervalResp struct {
 	GenerationFlag bool `json:"generationFlag"`
 }
 
+var centralTime *time.Location
+
+func init() {
+	var err error
+	centralTime, err = time.LoadLocation("America/Chicago")
+	if err != nil {
+		centralTime = time.UTC // fallback: tzdata package should prevent this
+	}
+}
+
 // FetchIntervals retrieves 15-minute interval data for [start, end] (inclusive).
 // Dates are treated as CT local time.
 func (c *SMTClient) FetchIntervals(ctx context.Context, start, end time.Time) ([]SMTInterval, error) {
@@ -152,7 +162,11 @@ func (c *SMTClient) FetchIntervals(ctx context.Context, start, end time.Time) ([
 	var intervals []SMTInterval
 	for _, row := range ir.IntervalData {
 		// date: "2026-03-24", starttime: " 12:00 am" (leading space, 12-hour)
-		ts, err := time.Parse("2006-01-02 3:04 pm", row.Date+" "+strings.TrimSpace(row.StartTime))
+		// ParseInLocation uses CT; ambiguous times during DST fallback (1am occurs
+		// twice on Nov first Sunday) are resolved to standard time (CST) by Go,
+		// so the two identical wall-clock entries collapse to the same timestamp —
+		// upsertIntervals deduplicates them before the INSERT.
+		ts, err := time.ParseInLocation("2006-01-02 3:04 pm", row.Date+" "+strings.TrimSpace(row.StartTime), centralTime)
 		if err != nil {
 			continue
 		}
