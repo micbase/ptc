@@ -9,10 +9,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+func dedupeIntervals(intervals []SMTInterval) []SMTInterval {
+	seen := make(map[time.Time]struct{}, len(intervals))
+	out := intervals[:0:0]
+	for _, iv := range intervals {
+		if _, dup := seen[iv.Start]; dup {
+			continue
+		}
+		seen[iv.Start] = struct{}{}
+		out = append(out, iv)
+	}
+	return out
+}
+
 func upsertIntervals(ctx context.Context, pool *pgxpool.Pool, intervals []SMTInterval) (int, error) {
 	if len(intervals) == 0 {
 		return 0, nil
 	}
+
+	intervals = dedupeIntervals(intervals)
 
 	const chunkSize = 500
 	total := 0
