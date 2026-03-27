@@ -77,57 +77,30 @@ func queryUsageCoverage(ctx context.Context, pool *pgxpool.Pool) (*SMTCoverage, 
 }
 
 // findBackfillWindow returns the next 7-day window to fetch.
-// Strategy:
-//  1. If newest < T-2 → fill forward to T-2 (latest guaranteed available date)
-//  2. If oldest > twoYearsAgo → fill backwards: 7 days before oldest
-//  3. Otherwise fully covered → return zero times
+// Fills forward from the oldest available date (today-2y+1d) up to T-2.
+// Returns ok=false when fully covered.
 func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	yesterday := truncDay(time.Now().AddDate(0, 0, -1))   // T-1: available ~8pm CT
-	t2 := truncDay(time.Now().AddDate(0, 0, -2))          // T-2: always available
-	twoYearsAgo := truncDay(time.Now().AddDate(-2, 0, 1)) // API rejects dates older than today-2y; oldest available is today-2y+1d
+	oldest := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
+	t2 := truncDay(time.Now().AddDate(0, 0, -2))     // latest date the API has
 
-	var oldest, newest *time.Time
-	pool.QueryRow(ctx, `
-		SELECT MIN(DATE(interval_start)), MAX(DATE(interval_start))
-		FROM usage_intervals`).
-		Scan(&oldest, &newest)
+	var newest *time.Time
+	pool.QueryRow(ctx, `SELECT MAX(DATE(interval_start)) FROM usage_intervals`).Scan(&newest)
 
-	// Case 1: catch up to T-1.
-	// When newest is nil, bootstrap at T-2 (guaranteed available) to avoid
-	// getting stuck if T-1 isn't ready yet. Once we have any data, target T-1:
-	// empty response before ~8pm is fine — next 10-min tick will retry.
-	if newest == nil || truncDay(*newest).Before(yesterday) {
-		if newest == nil {
-			start = t2
-			end = t2
-		} else {
-			start = truncDay(*newest).AddDate(0, 0, 1)
-			end = yesterday
-			if end.Sub(start) > 6*24*time.Hour {
-				end = start.AddDate(0, 0, 6)
-			}
-		}
-		return start, end, true
+	if newest == nil {
+		start = oldest
+	} else {
+		start = truncDay(*newest).AddDate(0, 0, 1)
 	}
 
-	// Case 2: need to backfill older history
-	if oldest == nil || truncDay(*oldest).After(twoYearsAgo) {
-		if oldest == nil {
-			end = t2
-		} else {
-			end = truncDay(*oldest).AddDate(0, 0, -1)
-		}
-		if end.Before(twoYearsAgo) {
-			return time.Time{}, time.Time{}, false
-		}
-		start = end.AddDate(0, 0, -6)
-		if start.Before(twoYearsAgo) {
-			start = twoYearsAgo
-		}
-		return start, end, true
+	if !start.Before(t2) {
+		return time.Time{}, time.Time{}, false // fully covered
 	}
 
-	return time.Time{}, time.Time{}, false
+	end = start.AddDate(0, 0, 6)
+	if end.After(t2) {
+		end = t2
+	}
+	return start, end, true
 }
 
 func truncDay(t time.Time) time.Time {
