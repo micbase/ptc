@@ -78,11 +78,10 @@ func queryUsageCoverage(ctx context.Context, pool *pgxpool.Pool) (*SMTCoverage, 
 
 // findBackfillWindow returns the next 7-day window to fetch.
 // Strategy:
-//  1. If newest < T-2 → fill forward from newest+1 to T-2 (T-1 not yet available)
+//  1. If newest < T-2 → fill forward to T-2 (latest guaranteed available date)
 //  2. If oldest > twoYearsAgo → fill backwards: 7 days before oldest
 //  3. Otherwise fully covered → return zero times
 func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
 	t2 := truncDay(time.Now().AddDate(0, 0, -2))          // T-2: guaranteed available; T-1 may not be yet
 	twoYearsAgo := truncDay(time.Now().AddDate(-2, 0, 1)) // API rejects dates older than today-2y; oldest available is today-2y+1d
 
@@ -92,21 +91,18 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 		FROM usage_intervals`).
 		Scan(&oldest, &newest)
 
-	// Case 1: missing recent data.
-	// When newest is nil, cap at T-2 to guarantee the first fetch succeeds and
-	// avoids getting stuck retrying an unavailable date forever.
-	// Once data exists, target T-1: if it's not available yet we get an empty
-	// response and retry next run — no stuck state since newest advances.
-	if newest == nil || truncDay(*newest).Before(yesterday) {
+	// Case 1: catch up to T-2 (latest guaranteed available date).
+	// Condition is newest < T-2 so once newest reaches T-2 this branch stops
+	// and Case 2 takes over for historical backfill.
+	if newest == nil || truncDay(*newest).Before(t2) {
 		if newest == nil {
 			start = t2
-			end = t2
 		} else {
 			start = truncDay(*newest).AddDate(0, 0, 1)
-			end = yesterday
-			if end.Sub(start) > 6*24*time.Hour {
-				end = start.AddDate(0, 0, 6)
-			}
+		}
+		end = t2
+		if end.Sub(start) > 6*24*time.Hour {
+			end = start.AddDate(0, 0, 6)
 		}
 		return start, end, true
 	}
