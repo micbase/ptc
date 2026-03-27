@@ -82,7 +82,8 @@ func queryUsageCoverage(ctx context.Context, pool *pgxpool.Pool) (*SMTCoverage, 
 //  2. If oldest > twoYearsAgo → fill backwards: 7 days before oldest
 //  3. Otherwise fully covered → return zero times
 func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	latest := truncDay(time.Now().AddDate(0, 0, -2))      // T-2: yesterday's data not yet available
+	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
+	t2 := truncDay(time.Now().AddDate(0, 0, -2))          // T-2: guaranteed available; T-1 may not be yet
 	twoYearsAgo := truncDay(time.Now().AddDate(-2, 0, 1)) // API rejects dates older than today-2y; oldest available is today-2y+1d
 
 	var oldest, newest *time.Time
@@ -91,16 +92,21 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 		FROM usage_intervals`).
 		Scan(&oldest, &newest)
 
-	// Case 1: missing recent data
-	if newest == nil || truncDay(*newest).Before(latest) {
+	// Case 1: missing recent data.
+	// When newest is nil, cap at T-2 to guarantee the first fetch succeeds and
+	// avoids getting stuck retrying an unavailable date forever.
+	// Once data exists, target T-1: if it's not available yet we get an empty
+	// response and retry next run — no stuck state since newest advances.
+	if newest == nil || truncDay(*newest).Before(yesterday) {
 		if newest == nil {
-			start = latest
+			start = t2
+			end = t2
 		} else {
 			start = truncDay(*newest).AddDate(0, 0, 1)
-		}
-		end = latest
-		if end.Sub(start) > 6*24*time.Hour {
-			end = start.AddDate(0, 0, 6)
+			end = yesterday
+			if end.Sub(start) > 6*24*time.Hour {
+				end = start.AddDate(0, 0, 6)
+			}
 		}
 		return start, end, true
 	}
@@ -108,7 +114,7 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 	// Case 2: need to backfill older history
 	if oldest == nil || truncDay(*oldest).After(twoYearsAgo) {
 		if oldest == nil {
-			end = latest
+			end = t2
 		} else {
 			end = truncDay(*oldest).AddDate(0, 0, -1)
 		}
