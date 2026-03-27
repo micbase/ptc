@@ -40,4 +40,8 @@ Returns all ONCOR plans for the given date, sorted by kwh1000 ascending.
 Returns time-series `{fetch_date, kwh1000}` data for chart lines.
 
 ## Database
-Requires an existing PostgreSQL `electricity_rates` table. See `retool/lib/*.sql` for query reference.
+Requires an existing PostgreSQL `electricity_rates` table. Migration files are in `sql/` (numbered sequentially).
+
+### Schema change rules
+- **Always** create a numbered migration file in `sql/` for any schema change — never apply schema changes only in Go code.
+- **Always** get explicit user approval before making any schema change.
