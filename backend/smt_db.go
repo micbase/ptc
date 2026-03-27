@@ -80,8 +80,8 @@ func queryUsageCoverage(ctx context.Context, pool *pgxpool.Pool) (*SMTCoverage, 
 // Fills forward from the oldest available date (today-2y+1d) up to T-2.
 // Returns ok=false when fully covered.
 func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	oldest := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
-	t2 := truncDay(time.Now().AddDate(0, 0, -2))     // latest date the API has
+	oldest    := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
+	yesterday := truncDay(time.Now().AddDate(0, 0, -1)) // target: T-1, available ~8pm CT
 
 	var newest *time.Time
 	pool.QueryRow(ctx, `SELECT MAX(DATE(interval_start)) FROM usage_intervals`).Scan(&newest)
@@ -92,13 +92,13 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 		start = truncDay(*newest).AddDate(0, 0, 1)
 	}
 
-	if !start.Before(t2) {
+	if !start.Before(yesterday) {
 		return time.Time{}, time.Time{}, false // fully covered
 	}
 
 	end = start.AddDate(0, 0, 6)
-	if end.After(t2) {
-		end = t2
+	if end.After(yesterday) {
+		end = yesterday
 	}
 	return start, end, true
 }
