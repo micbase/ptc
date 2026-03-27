@@ -78,11 +78,11 @@ func queryUsageCoverage(ctx context.Context, pool *pgxpool.Pool) (*SMTCoverage, 
 
 // findBackfillWindow returns the next 7-day window to fetch.
 // Strategy:
-//  1. If newest < yesterday → fill forward from newest+1 to yesterday (catch-up)
+//  1. If newest < T-2 → fill forward from newest+1 to T-2 (T-1 not yet available)
 //  2. If oldest > twoYearsAgo → fill backwards: 7 days before oldest
 //  3. Otherwise fully covered → return zero times
 func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
+	latest := truncDay(time.Now().AddDate(0, 0, -2))      // T-2: yesterday's data not yet available
 	twoYearsAgo := truncDay(time.Now().AddDate(-2, 0, 1)) // API rejects dates older than today-2y; oldest available is today-2y+1d
 
 	var oldest, newest *time.Time
@@ -92,13 +92,13 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 		Scan(&oldest, &newest)
 
 	// Case 1: missing recent data
-	if newest == nil || truncDay(*newest).Before(yesterday) {
+	if newest == nil || truncDay(*newest).Before(latest) {
 		if newest == nil {
-			start = yesterday
+			start = latest
 		} else {
 			start = truncDay(*newest).AddDate(0, 0, 1)
 		}
-		end = yesterday
+		end = latest
 		if end.Sub(start) > 6*24*time.Hour {
 			end = start.AddDate(0, 0, 6)
 		}
@@ -108,7 +108,7 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 	// Case 2: need to backfill older history
 	if oldest == nil || truncDay(*oldest).After(twoYearsAgo) {
 		if oldest == nil {
-			end = yesterday
+			end = latest
 		} else {
 			end = truncDay(*oldest).AddDate(0, 0, -1)
 		}

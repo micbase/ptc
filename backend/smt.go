@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -85,7 +84,6 @@ func (c *SMTClient) getToken(ctx context.Context) (string, error) {
 	defer resp.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(resp.Body)
-	log.Printf("smt auth: status=%d body=%s", resp.StatusCode, truncate(string(bodyBytes), 500))
 
 	var ar struct {
 		Token string `json:"token"`
@@ -166,13 +164,6 @@ func (c *SMTClient) FetchIntervals(ctx context.Context, start, end time.Time) ([
 	}
 
 	return intervals, nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }
 
 func setSmtHeaders(req *http.Request, token string) {
