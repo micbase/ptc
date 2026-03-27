@@ -27,11 +27,27 @@ func main() {
 		port = "8080"
 	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+
+	// Start SMT backfill if credentials are configured.
+	var smtClient *SMTClient
+	smtUser := os.Getenv("SMT_USERNAME")
+	smtPass := os.Getenv("SMT_PASSWORD")
+	smtESIID := os.Getenv("SMT_ESIID")
+	if smtUser != "" && smtPass != "" && smtESIID != "" {
+		smtClient = NewSMTClient(smtUser, smtPass, smtESIID)
+		go RunSMTBackfill(ctx, smtClient, pool)
+		log.Printf("SMT backfill started for ESIID %s", smtESIID)
+	} else {
+		log.Printf("SMT_USERNAME/SMT_PASSWORD/SMT_ESIID not set — usage backfill disabled")
+	}
 
 	r := chi.NewRouter()
 
@@ -39,6 +55,8 @@ func main() {
 	r.Get("/api/charts", handleCharts(pool))
 	r.Get("/api/latest-date", handleLatestDate(pool))
 	r.Post("/api/fetch", handleFetch(pool))
+	r.Get("/api/usage/status", handleUsageStatus(pool, smtClient))
+	r.Post("/api/usage/backfill", handleUsageBackfill(pool, smtClient))
 
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
