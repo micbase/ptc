@@ -83,21 +83,13 @@ func main() {
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }
 
-// scheduleDailyFetch runs fetchAndInsert twice a day at 07:10 and 19:10.
+// scheduleDailyFetch runs fetchAndInsert every day at 19:10.
 func scheduleDailyFetch(pool *pgxpool.Pool) {
-	scheduleHours := []int{7, 19}
 	for {
 		now := time.Now()
-		var next time.Time
-		for _, h := range scheduleHours {
-			t := time.Date(now.Year(), now.Month(), now.Day(), h, 10, 0, 0, now.Location())
-			if t.After(now) && (next.IsZero() || t.Before(next)) {
-				next = t
-			}
-		}
-		if next.IsZero() {
-			// All times today have passed; use first slot tomorrow.
-			next = time.Date(now.Year(), now.Month(), now.Day()+1, scheduleHours[0], 10, 0, 0, now.Location())
+		next := time.Date(now.Year(), now.Month(), now.Day(), 19, 10, 0, 0, now.Location())
+		if !next.After(now) {
+			next = next.Add(24 * time.Hour)
 		}
 		log.Printf("Daily fetch scheduled at %s", next.Format(time.RFC3339))
 		time.Sleep(time.Until(next))
