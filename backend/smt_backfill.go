@@ -13,28 +13,35 @@ import (
 // usage_intervals data from SmartMeterTexas.
 //
 // Strategy:
-//   - Every 2 hours: fetch the next 7-day window (fills recent gaps first,
-//     then works backwards up to 2 years).
+//   - Runs once immediately on startup, then twice a day at 08:00 and 20:00.
+//   - Each run fetches the next 7-day window (fills recent gaps first, then
+//     works backwards up to 2 years).
 //   - With 24 API calls/day limit and 7-day batches, a full 2-year backfill
-//     completes in ~5 days. The 2-hour interval uses only 12 calls/day,
-//     leaving headroom.
+//     completes in ~52 days at 2 runs/day.
 //
 // The goroutine stops when ctx is cancelled (i.e., on server shutdown).
 func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) {
-	// Run once immediately on startup, then every 2 hours.
-	runOnce := make(chan struct{}, 1)
-	runOnce <- struct{}{}
+	// Run once immediately on startup.
+	doBackfillStep(ctx, client, pool)
 
-	ticker := time.NewTicker(10 * time.Minute)
-	defer ticker.Stop()
-
+	scheduleHours := []int{8, 20}
 	for {
+		now := time.Now()
+		var next time.Time
+		for _, h := range scheduleHours {
+			t := time.Date(now.Year(), now.Month(), now.Day(), h, 0, 0, 0, now.Location())
+			if t.After(now) && (next.IsZero() || t.Before(next)) {
+				next = t
+			}
+		}
+		if next.IsZero() {
+			next = time.Date(now.Year(), now.Month(), now.Day()+1, scheduleHours[0], 0, 0, 0, now.Location())
+		}
+		log.Printf("SMT backfill next run scheduled at %s", next.Format(time.RFC3339))
 		select {
 		case <-ctx.Done():
 			return
-		case <-runOnce:
-			doBackfillStep(ctx, client, pool)
-		case <-ticker.C:
+		case <-time.After(time.Until(next)):
 			doBackfillStep(ctx, client, pool)
 		}
 	}
