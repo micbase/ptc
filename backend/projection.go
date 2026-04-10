@@ -44,13 +44,13 @@ type ProjectionPlanInfo struct {
 }
 
 type SwitchEvent struct {
-	EffectiveMonth string             `json:"effective_month"` // "T+N" period label
-	ETFPaid        float64            `json:"etf_paid"`
-	Plan           ProjectionPlanInfo `json:"plan"`
+	EffectivePeriod string             `json:"effective_period"` // "T+N" period label
+	ETFPaid         float64            `json:"etf_paid"`
+	Plan            ProjectionPlanInfo `json:"plan"`
 }
 
-type MonthlyBreakdown struct {
-	Month            string  `json:"month"`             // "T+N" period label
+type PeriodBreakdown struct {
+	Period           string  `json:"period"`            // "T+N" period label
 	PeriodStart      string  `json:"period_start"`      // "YYYY-MM-DD"
 	PeriodEnd        string  `json:"period_end"`        // "YYYY-MM-DD" (inclusive last day)
 	UsageKwh         float64 `json:"usage_kwh"`
@@ -58,7 +58,7 @@ type MonthlyBreakdown struct {
 	ActivePlanLabel  string  `json:"active_plan_label"`
 	RateCents        float64 `json:"rate_cents"`
 	BaseFee          float64 `json:"base_fee"`
-	MonthlyCost      float64 `json:"monthly_cost"`
+	PeriodCost       float64 `json:"period_cost"`
 	Confidence       string  `json:"confidence"`
 }
 
@@ -72,7 +72,7 @@ type StrategyResult struct {
 	SwitchCount            int                `json:"switch_count"`
 	Confidence             string             `json:"confidence"`
 	Switches               []SwitchEvent      `json:"switches"`
-	MonthlyBreakdown       []MonthlyBreakdown `json:"monthly_breakdown"`
+	PeriodBreakdown        []PeriodBreakdown  `json:"period_breakdown"`
 }
 
 // planSegment is a half-open interval [start, end) covered by a single plan.
@@ -336,8 +336,8 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// For each T+x period, sum contributions from all overlapping segments
 	// pro-rated by the fraction of days they cover within the period.
 	// Variable segments re-project to the period's start date.
-	buildBreakdown := func(segs []planSegment) ([]MonthlyBreakdown, float64) {
-		bd := make([]MonthlyBreakdown, numPeriods)
+	buildBreakdown := func(segs []planSegment) ([]PeriodBreakdown, float64) {
+		bd := make([]PeriodBreakdown, numPeriods)
 		total := 0.0
 		for i := 0; i < numPeriods; i++ {
 			pStart := periodStarts[i]
@@ -368,8 +368,8 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			total += cost
 			// period_end is shown as the last day (inclusive) = pEnd - 1 day
 			lastDay := pEnd.AddDate(0, 0, -1)
-			bd[i] = MonthlyBreakdown{
-				Month:            periodLabel(i),
+			bd[i] = PeriodBreakdown{
+				Period:           periodLabel(i),
 				PeriodStart:      pStart.Format("2006-01-02"),
 				PeriodEnd:        lastDay.Format("2006-01-02"),
 				UsageKwh:         round2(u),
@@ -377,7 +377,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				ActivePlanLabel:  label,
 				RateCents:        round2(blendRate),
 				BaseFee:          round2(blendBase),
-				MonthlyCost:      round2(cost),
+				PeriodCost:       round2(cost),
 				Confidence:       periodConfidence(pStart, today),
 			}
 		}
@@ -389,7 +389,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		conf := "high"
 		for _, sw := range switches {
 			for i := 0; i < numPeriods; i++ {
-				if periodLabel(i) == sw.EffectiveMonth {
+				if periodLabel(i) == sw.EffectivePeriod {
 					conf = lowestConfidence(conf, periodConfidence(periodStarts[i], today))
 				}
 			}
@@ -398,14 +398,14 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			switches = []SwitchEvent{}
 		}
 		return StrategyResult{
-			StrategyID:       id,
-			StrategyName:     name,
-			TotalCost:        round2(total),
-			ETFPaid:          etfPaid,
-			SwitchCount:      len(switches),
-			Confidence:       conf,
-			Switches:         switches,
-			MonthlyBreakdown: bd,
+			StrategyID:      id,
+			StrategyName:    name,
+			TotalCost:       round2(total),
+			ETFPaid:         etfPaid,
+			SwitchCount:     len(switches),
+			Confidence:      conf,
+			Switches:        switches,
+			PeriodBreakdown: bd,
 		}
 	}
 
@@ -452,7 +452,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: pr.ap})
 			switches = append(switches, SwitchEvent{
-				EffectiveMonth: dateToPeriod(dpDate),
+				EffectivePeriod: dateToPeriod(dpDate),
 				ETFPaid:        etf,
 				Plan:           pr.info,
 			})
@@ -589,7 +589,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: bestPR.ap})
 			switches = append(switches, SwitchEvent{
-				EffectiveMonth: dateToPeriod(dpDate),
+				EffectivePeriod: dateToPeriod(dpDate),
 				ETFPaid:        0,
 				Plan:           bestPR.info,
 			})

@@ -13,7 +13,7 @@ import {
   type ChartData,
 } from 'chart.js'
 import { fetchProjection } from '../api'
-import type { StrategyResult, ProjectionRequest } from '../types'
+import type { StrategyResult, PeriodBreakdown, ProjectionRequest } from '../types'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
 
@@ -53,17 +53,17 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-function isSwitchMonth(strategy: StrategyResult, month: string): boolean {
-  return strategy.switches.some((sw) => sw.effective_month === month)
+function isSwitchPeriod(strategy: StrategyResult, period: string): boolean {
+  return strategy.switches.some((sw) => sw.effective_period === period)
 }
 
-function switchEtfForMonth(strategy: StrategyResult, month: string): number {
-  const sw = strategy.switches.find((s) => s.effective_month === month)
+function switchEtfForPeriod(strategy: StrategyResult, period: string): number {
+  const sw = strategy.switches.find((s) => s.effective_period === period)
   return sw?.etf_paid ?? 0
 }
 
-function isVariableMonth(strategy: StrategyResult, month: string): boolean {
-  const mb = strategy.monthly_breakdown.find((m) => m.month === month)
+function isVariablePeriod(strategy: StrategyResult, period: string): boolean {
+  const mb = strategy.period_breakdown.find((m) => m.period === period)
   return mb?.active_plan_label.includes('Variable') ?? false
 }
 
@@ -75,39 +75,39 @@ const visibleStrategies = computed(() => {
   )
 })
 
-const monthLabels = computed(() =>
-  strategies.value[0]?.monthly_breakdown.map((m) => m.month) ?? [],
+const periodLabels = computed(() =>
+  strategies.value[0]?.period_breakdown.map((m) => m.period) ?? [],
 )
 
-// ── Monthly cost chart data ───────────────────────────────────────────────────
-const monthlyCostData = computed<ChartData<'line'>>(() => {
-  const labels = monthLabels.value
+// ── Period cost chart data ────────────────────────────────────────────────────
+const periodCostData = computed<ChartData<'line'>>(() => {
+  const labels = periodLabels.value
   const datasets = visibleStrategies.value.map((s) => {
     const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
-    const monthCosts = s.monthly_breakdown.map((m) => m.monthly_cost)
-    const switchMonths = new Set(s.switches.map((sw) => sw.effective_month))
+    const periodCosts = s.period_breakdown.map((m) => m.period_cost)
+    const switchPeriods = new Set(s.switches.map((sw) => sw.effective_period))
 
     return {
       label: s.strategy_name,
-      data: monthCosts,
+      data: periodCosts,
       borderColor: color,
       backgroundColor: color,
       borderWidth: 2,
       tension: 0.1,
-      pointRadius: labels.map((lbl) => (switchMonths.has(lbl) ? 7 : 2)),
+      pointRadius: labels.map((lbl) => (switchPeriods.has(lbl) ? 7 : 2)),
       pointHoverRadius: 9,
       pointStyle: labels.map((lbl) => {
-        const etf = switchEtfForMonth(s, lbl)
-        if (switchMonths.has(lbl) && etf > 0) return 'star' as const
-        if (switchMonths.has(lbl)) return 'circle' as const
+        const etf = switchEtfForPeriod(s, lbl)
+        if (switchPeriods.has(lbl) && etf > 0) return 'star' as const
+        if (switchPeriods.has(lbl)) return 'circle' as const
         return 'circle' as const
       }),
       segment: {
-        borderDash: (ctx: any) => (isVariableMonth(s, labels[ctx.p0DataIndex]) ? [6, 3] : []),
+        borderDash: (ctx: any) => (isVariablePeriod(s, labels[ctx.p0DataIndex]) ? [6, 3] : []),
         borderColor: (ctx: any) => {
           const idx = ctx.p0DataIndex
           const isLowConf = idx >= 6
-          return hexToRgba(color, isLowConf && isVariableMonth(s, labels[idx]) ? 0.45 : 1)
+          return hexToRgba(color, isLowConf && isVariablePeriod(s, labels[idx]) ? 0.45 : 1)
         },
       },
     }
@@ -115,13 +115,13 @@ const monthlyCostData = computed<ChartData<'line'>>(() => {
   return { labels, datasets }
 })
 
-const monthlyCostOptions = computed<ChartOptions<'line'>>(() => ({
+const periodCostOptions = computed<ChartOptions<'line'>>(() => ({
   responsive: true,
   maintainAspectRatio: false,
   interaction: { mode: 'index', intersect: false },
   scales: {
     x: { ticks: { maxRotation: 45 } },
-    y: { title: { display: true, text: 'Monthly Cost ($)' } },
+    y: { title: { display: true, text: 'Period Cost ($)' } },
   },
   plugins: {
     legend: { position: 'top' },
@@ -129,8 +129,8 @@ const monthlyCostOptions = computed<ChartOptions<'line'>>(() => ({
       callbacks: {
         afterLabel: (ctx) => {
           const s = visibleStrategies.value[ctx.datasetIndex]
-          const lbl = monthLabels.value[ctx.dataIndex]
-          const sw = s?.switches.find((sw) => sw.effective_month === lbl)
+          const lbl = periodLabels.value[ctx.dataIndex]
+          const sw = s?.switches.find((sw) => sw.effective_period === lbl)
           if (!sw) return ''
           const parts: string[] = [`  ↳ Switch to ${sw.plan.rep_company} @ ${sw.plan.projected_rate_cents.toFixed(2)}¢/kWh`]
           if (sw.etf_paid > 0) parts.push(`  ⚠ ETF: $${sw.etf_paid.toFixed(2)}`)
@@ -143,17 +143,17 @@ const monthlyCostOptions = computed<ChartOptions<'line'>>(() => ({
 
 // ── Cumulative cost chart data ────────────────────────────────────────────────
 const cumulativeCostData = computed<ChartData<'line'>>(() => {
-  const labels = monthLabels.value
+  const labels = periodLabels.value
   const datasets = visibleStrategies.value.map((s) => {
     const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
-    const etfByMonth: Record<string, number> = {}
+    const etfByPeriod: Record<string, number> = {}
     s.switches.forEach((sw) => {
-      if (sw.etf_paid > 0) etfByMonth[sw.effective_month] = (etfByMonth[sw.effective_month] ?? 0) + sw.etf_paid
+      if (sw.etf_paid > 0) etfByPeriod[sw.effective_period] = (etfByPeriod[sw.effective_period] ?? 0) + sw.etf_paid
     })
 
     let running = 0
-    const cumData = s.monthly_breakdown.map((mb) => {
-      running += mb.monthly_cost + (etfByMonth[mb.month] ?? 0)
+    const cumData = s.period_breakdown.map((pb) => {
+      running += pb.period_cost + (etfByPeriod[pb.period] ?? 0)
       return Math.round(running * 100) / 100
     })
 
@@ -165,11 +165,11 @@ const cumulativeCostData = computed<ChartData<'line'>>(() => {
       borderWidth: 2,
       tension: 0.1,
       pointRadius: labels.map((lbl) => {
-        const etf = switchEtfForMonth(s, lbl)
+        const etf = switchEtfForPeriod(s, lbl)
         return etf > 0 ? 7 : 2
       }),
       pointStyle: labels.map((lbl) => {
-        const etf = switchEtfForMonth(s, lbl)
+        const etf = switchEtfForPeriod(s, lbl)
         return etf > 0 ? ('star' as const) : ('circle' as const)
       }),
       pointHoverRadius: 9,
@@ -192,8 +192,8 @@ const cumulativeCostOptions = computed<ChartOptions<'line'>>(() => ({
       callbacks: {
         afterLabel: (ctx) => {
           const s = visibleStrategies.value[ctx.datasetIndex]
-          const lbl = monthLabels.value[ctx.dataIndex]
-          const etf = switchEtfForMonth(s, lbl)
+          const lbl = periodLabels.value[ctx.dataIndex]
+          const etf = switchEtfForPeriod(s, lbl)
           if (etf > 0) return `  ⚠ ETF paid: $${etf.toFixed(2)}`
           return ''
         },
@@ -358,11 +358,11 @@ function sortIcon(key: keyof StrategyResult): string {
         <button class="ml-auto underline" @click="selectedStrategyId = null">Show all</button>
       </div>
 
-      <!-- Panel 1: Monthly Cost Chart -->
+      <!-- Panel 1: Period Cost Chart -->
       <div class="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 class="text-base font-semibold text-gray-700 mb-3">Monthly Cost by Strategy</h2>
+        <h2 class="text-base font-semibold text-gray-700 mb-3">Period Cost by Strategy</h2>
         <div style="height: 380px">
-          <Line :data="monthlyCostData" :options="monthlyCostOptions" style="height: 380px" />
+          <Line :data="periodCostData" :options="periodCostOptions" style="height: 380px" />
         </div>
         <p class="mt-2 text-xs text-gray-400">
           Circles on lines = switch events. ★ = ETF paid at switch. Dashed segments = variable plan months. Months 7-12 on non-fixed projections shown at reduced opacity.
@@ -466,11 +466,11 @@ function sortIcon(key: keyof StrategyResult): string {
         </div>
       </div>
 
-      <!-- Monthly Breakdown for selected strategy -->
+      <!-- Period Breakdown for selected strategy -->
       <div v-if="selectedStrategyId" class="bg-white rounded-lg shadow overflow-hidden mb-6">
         <div class="px-4 py-3 border-b border-gray-100">
           <h2 class="text-base font-semibold text-gray-700">
-            Monthly Breakdown — {{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}
+            Period Breakdown — {{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}
           </h2>
         </div>
         <div class="overflow-x-auto">
@@ -489,22 +489,22 @@ function sortIcon(key: keyof StrategyResult): string {
             </thead>
             <tbody>
               <tr
-                v-for="mb in strategies.find(s => s.strategy_id === selectedStrategyId)?.monthly_breakdown"
-                :key="mb.month"
+                v-for="pb in strategies.find(s => s.strategy_id === selectedStrategyId)?.period_breakdown"
+                :key="pb.period"
                 class="border-t border-gray-100"
               >
-                <td class="px-3 py-2 font-mono text-gray-700">{{ mb.month }}</td>
-                <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ mb.period_start }} – {{ mb.period_end }}</td>
+                <td class="px-3 py-2 font-mono text-gray-700">{{ pb.period }}</td>
+                <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ pb.period_start }} – {{ pb.period_end }}</td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">
-                  {{ mb.usage_kwh.toFixed(0) }}
-                  <span v-if="mb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
+                  {{ pb.usage_kwh.toFixed(0) }}
+                  <span v-if="pb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
                 </td>
-                <td class="px-3 py-2 text-gray-600 max-w-xs truncate">{{ mb.active_plan_label }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ mb.rate_cents.toFixed(2) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ mb.base_fee.toFixed(2) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ mb.monthly_cost.toFixed(2) }}</td>
+                <td class="px-3 py-2 text-gray-600 max-w-xs truncate">{{ pb.active_plan_label }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.rate_cents.toFixed(2) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>
                 <td class="px-3 py-2 text-center">
-                  <span :class="['text-xs font-medium capitalize', confidenceClass(mb.confidence)]">{{ mb.confidence }}</span>
+                  <span :class="['text-xs font-medium capitalize', confidenceClass(pb.confidence)]">{{ pb.confidence }}</span>
                 </td>
               </tr>
             </tbody>
