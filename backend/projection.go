@@ -108,9 +108,9 @@ func overlapFrac(periodStart, periodEnd, segStart, segEnd time.Time) float64 {
 	return hi.Sub(lo).Hours() / 24 / periodDays
 }
 
-// periodLabel returns the T+N label for period index i.
+// periodLabel returns the T+N label for period index i (1-based).
 func periodLabel(i int) string {
-	return fmt.Sprintf("T+%d", i)
+	return fmt.Sprintf("T+%d", i+1)
 }
 
 // periodConfidence returns confidence based on how far periodStart is from today.
