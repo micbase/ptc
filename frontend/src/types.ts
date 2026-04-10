@@ -65,7 +65,9 @@ export interface SwitchEvent {
 }
 
 export interface MonthlyBreakdown {
-  month: string
+  month: string         // "T+N" period label
+  period_start: string  // "YYYY-MM-DD"
+  period_end: string    // "YYYY-MM-DD" (inclusive last day)
   usage_kwh: number
   usage_is_estimated: boolean
   active_plan_label: string

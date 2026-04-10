@@ -44,13 +44,15 @@ type ProjectionPlanInfo struct {
 }
 
 type SwitchEvent struct {
-	EffectiveMonth string             `json:"effective_month"`
+	EffectiveMonth string             `json:"effective_month"` // "T+N" period label
 	ETFPaid        float64            `json:"etf_paid"`
 	Plan           ProjectionPlanInfo `json:"plan"`
 }
 
 type MonthlyBreakdown struct {
-	Month            string  `json:"month"`
+	Month            string  `json:"month"`             // "T+N" period label
+	PeriodStart      string  `json:"period_start"`      // "YYYY-MM-DD"
+	PeriodEnd        string  `json:"period_end"`        // "YYYY-MM-DD" (inclusive last day)
 	UsageKwh         float64 `json:"usage_kwh"`
 	UsageIsEstimated bool    `json:"usage_is_estimated"`
 	ActivePlanLabel  string  `json:"active_plan_label"`
@@ -75,7 +77,7 @@ type StrategyResult struct {
 
 // planSegment is a half-open interval [start, end) covered by a single plan.
 // If isVar is true the ap field is ignored and the variable rate is re-projected
-// to the specific calendar month at breakdown time.
+// to the specific period at breakdown time.
 type planSegment struct {
 	start time.Time
 	end   time.Time
@@ -90,31 +92,30 @@ type activePlan struct {
 	baseFee   float64
 }
 
-// overlapFrac returns the fraction of the calendar month starting at monthStart
-// that is covered by the segment [segStart, segEnd).
-func overlapFrac(monthStart, segStart, segEnd time.Time) float64 {
-	monthEnd := time.Date(monthStart.Year(), monthStart.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+// overlapFrac returns the fraction of [periodStart, periodEnd) covered by segment [segStart, segEnd).
+func overlapFrac(periodStart, periodEnd, segStart, segEnd time.Time) float64 {
 	lo, hi := segStart, segEnd
-	if lo.Before(monthStart) {
-		lo = monthStart
+	if lo.Before(periodStart) {
+		lo = periodStart
 	}
-	if hi.After(monthEnd) {
-		hi = monthEnd
+	if hi.After(periodEnd) {
+		hi = periodEnd
 	}
 	if !hi.After(lo) {
 		return 0
 	}
-	monthDays := monthEnd.Sub(monthStart).Hours() / 24
-	return hi.Sub(lo).Hours() / 24 / monthDays
+	periodDays := periodEnd.Sub(periodStart).Hours() / 24
+	return hi.Sub(lo).Hours() / 24 / periodDays
 }
 
-func monthLabel(t time.Time) string {
-	return t.Format("2006-01")
+// periodLabel returns the T+N label for period index i.
+func periodLabel(i int) string {
+	return fmt.Sprintf("T+%d", i)
 }
 
-// monthConfidence returns confidence based on how far monthStart is from today.
-func monthConfidence(monthStart, today time.Time) string {
-	monthsAhead := (monthStart.Year()-today.Year())*12 + int(monthStart.Month()) - int(today.Month())
+// periodConfidence returns confidence based on how far periodStart is from today.
+func periodConfidence(periodStart, today time.Time) string {
+	monthsAhead := (periodStart.Year()-today.Year())*12 + int(periodStart.Month()) - int(today.Month())
 	if monthsAhead < 2 {
 		return "high"
 	} else if monthsAhead < 6 {
@@ -132,11 +133,11 @@ func lowestConfidence(a, b string) string {
 }
 
 // seasonalRatio computes historical_min_rate(decisionMonth-1yr) / historical_min_rate(today-1yr).
-func seasonalRatio(decisionMonth, today time.Time, rates map[string]float64) float64 {
-	sameLY := time.Date(decisionMonth.Year()-1, decisionMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
+func seasonalRatio(decisionPoint, today time.Time, rates map[string]float64) float64 {
+	sameLY := time.Date(decisionPoint.Year()-1, decisionPoint.Month(), 1, 0, 0, 0, 0, time.UTC)
 	todayLY := time.Date(today.Year()-1, today.Month(), 1, 0, 0, 0, 0, time.UTC)
-	num, ok1 := rates[monthLabel(sameLY)]
-	den, ok2 := rates[monthLabel(todayLY)]
+	num, ok1 := rates[sameLY.Format("2006-01")]
+	den, ok2 := rates[todayLY.Format("2006-01")]
 	if !ok1 || !ok2 || den == 0 {
 		return 1.0
 	}
@@ -185,34 +186,39 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	if err != nil {
 		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
 	}
-	// Normalize to UTC midnight
 	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
 
-	// 12-month window anchored to expiry (or today if already expired).
+	// T = start of the projection window:
+	//   - expiry date if it's in the future
+	//   - today if contract has already expired
+	// The window then runs T, T+1m, T+2m, … T+12m (12 T+x periods).
 	windowStart := expiry
 	if expiry.Before(today) {
 		windowStart = today
 	}
-	windowEnd := windowStart.AddDate(0, 12, 0)
 
-	// Enumerate all calendar months overlapping [windowStart, windowEnd).
-	// A mid-month windowStart (e.g. May 15) yields 13 months: partial May … partial May+1yr.
-	var months []time.Time
-	for m := time.Date(windowStart.Year(), windowStart.Month(), 1, 0, 0, 0, 0, time.UTC); m.Before(windowEnd); m = time.Date(m.Year(), m.Month()+1, 1, 0, 0, 0, 0, time.UTC) {
-		months = append(months, m)
+	const numPeriods = 12
+
+	// periodStarts[i] = T + i months; periodStarts[12] = T + 12m = windowEnd
+	periodStarts := make([]time.Time, numPeriods+1)
+	for i := 0; i <= numPeriods; i++ {
+		periodStarts[i] = windowStart.AddDate(0, i, 0)
 	}
+	windowEnd := periodStarts[numPeriods]
 
-	// Historical usage range: 1 year prior to the window's calendar-month span.
-	histStart := time.Date(months[0].Year()-1, months[0].Month(), 1, 0, 0, 0, 0, time.UTC)
-	histEnd := time.Date(months[len(months)-1].Year()-1, months[len(months)-1].Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	// Historical period starts for usage lookup (same T+i periods, 1 year back).
+	histPeriodStarts := make([]time.Time, numPeriods)
+	for i := 0; i < numPeriods; i++ {
+		histPeriodStarts[i] = windowStart.AddDate(-1, i, 0)
+	}
 
 	linearPlans, err := queryLinearPlans(ctx, pool, today)
 	if err != nil {
 		return nil, fmt.Errorf("queryLinearPlans: %w", err)
 	}
-	usageMap, estimatedMap, err := queryMonthlyUsage(ctx, pool, histStart, histEnd)
+	usageMap, estimatedMap, err := queryPeriodUsage(ctx, pool, histPeriodStarts)
 	if err != nil {
-		return nil, fmt.Errorf("queryMonthlyUsage: %w", err)
+		return nil, fmt.Errorf("queryPeriodUsage: %w", err)
 	}
 	fixedRates, err := queryHistoricalMinRates(ctx, pool, false)
 	if err != nil {
@@ -224,13 +230,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	}
 
 	// switchDateExpiry: when at-expiry strategies start the new plan.
-	// If expiry is before the window, treat as windowStart (contract already expired).
 	switchDateExpiry := expiry
 	if switchDateExpiry.Before(windowStart) {
 		switchDateExpiry = windowStart
 	}
 
-	// switchDateNow: today (the actual calendar date, may be mid-month).
 	switchDateNow := today
 
 	// ETF applies if switching today is before (expiry − 14 days).
@@ -240,10 +244,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		etfOnSwitchNow = req.ETFAmount
 	}
 
-	// Average usage fallback
+	// Average usage fallback across periods with known history.
 	totalUsage, usageCount := 0.0, 0
-	for _, m := range months {
-		if u, ok := usageMap[monthLabel(m)]; ok && u > 0 {
+	for i := 0; i < numPeriods; i++ {
+		if u, ok := usageMap[i]; ok && u > 0 {
 			totalUsage += u
 			usageCount++
 		}
@@ -254,12 +258,21 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	}
 
 	usage := func(idx int) (float64, bool) {
-		ml := monthLabel(months[idx])
-		u, ok := usageMap[ml]
+		u, ok := usageMap[idx]
 		if !ok || u == 0 {
 			return avgUsage, true
 		}
-		return u, estimatedMap[ml]
+		return u, estimatedMap[idx]
+	}
+
+	// dateToPeriod maps a calendar date to the T+N label of the period it falls in.
+	dateToPeriod := func(d time.Time) string {
+		for i := 0; i < numPeriods; i++ {
+			if !d.Before(periodStarts[i]) && d.Before(periodStarts[i+1]) {
+				return periodLabel(i)
+			}
+		}
+		return periodLabel(numPeriods)
 	}
 
 	projectFixed := func(p *LinearPlan, dp time.Time) (rateCents, baseFee float64) {
@@ -319,25 +332,27 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		baseFee:   req.CurrentBaseFee,
 	}
 
-	// ── buildMonthlyBreakdown ─────────────────────────────────────────────────
-	// For each calendar month, sums contributions from all overlapping segments
-	// pro-rated by the fraction of days they cover. Variable segments (isVar=true)
-	// are re-projected to the specific calendar month rather than using a fixed rate.
+	// ── buildBreakdown ────────────────────────────────────────────────────────
+	// For each T+x period, sum contributions from all overlapping segments
+	// pro-rated by the fraction of days they cover within the period.
+	// Variable segments re-project to the period's start date.
 	buildBreakdown := func(segs []planSegment) ([]MonthlyBreakdown, float64) {
-		bd := make([]MonthlyBreakdown, len(months))
+		bd := make([]MonthlyBreakdown, numPeriods)
 		total := 0.0
-		for i, monthStart := range months {
+		for i := 0; i < numPeriods; i++ {
+			pStart := periodStarts[i]
+			pEnd := periodStarts[i+1]
 			u, isEst := usage(i)
 			cost, blendRate, blendBase := 0.0, 0.0, 0.0
 			label := ""
 			for _, seg := range segs {
-				frac := overlapFrac(monthStart, seg.start, seg.end)
+				frac := overlapFrac(pStart, pEnd, seg.start, seg.end)
 				if frac <= 0 {
 					continue
 				}
 				ap := seg.ap
 				if seg.isVar {
-					if vp := getVar(monthStart); vp != nil {
+					if vp := getVar(pStart); vp != nil {
 						ap = vp.ap
 					}
 				}
@@ -351,15 +366,19 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				}
 			}
 			total += cost
+			// period_end is shown as the last day (inclusive) = pEnd - 1 day
+			lastDay := pEnd.AddDate(0, 0, -1)
 			bd[i] = MonthlyBreakdown{
-				Month:            monthLabel(monthStart),
+				Month:            periodLabel(i),
+				PeriodStart:      pStart.Format("2006-01-02"),
+				PeriodEnd:        lastDay.Format("2006-01-02"),
 				UsageKwh:         round2(u),
 				UsageIsEstimated: isEst,
 				ActivePlanLabel:  label,
 				RateCents:        round2(blendRate),
 				BaseFee:          round2(blendBase),
 				MonthlyCost:      round2(cost),
-				Confidence:       monthConfidence(monthStart, today),
+				Confidence:       periodConfidence(pStart, today),
 			}
 		}
 		return bd, total
@@ -369,9 +388,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		bd, total := buildBreakdown(segs)
 		conf := "high"
 		for _, sw := range switches {
-			for _, m := range months {
-				if monthLabel(m) == sw.EffectiveMonth {
-					conf = lowestConfidence(conf, monthConfidence(m, today))
+			for i := 0; i < numPeriods; i++ {
+				if periodLabel(i) == sw.EffectiveMonth {
+					conf = lowestConfidence(conf, periodConfidence(periodStarts[i], today))
 				}
 			}
 		}
@@ -392,7 +411,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 
 	// ── buildFixedRolling ─────────────────────────────────────────────────────
 	// Builds date-based plan segments for a rolling fixed-term strategy.
-	// switchDate: the date the first new plan starts (may be mid-month).
+	// switchDate: the date the first new plan starts (may be mid-period).
 	// termMonths: plan term in calendar months (3, 6, or 12).
 	// etf0: ETF amount charged on the first switch (0 if none).
 	buildFixedRolling := func(switchDate time.Time, termMonths int, etf0 float64) ([]planSegment, []SwitchEvent) {
@@ -408,7 +427,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			segs = append(segs, planSegment{start: windowStart, end: end, ap: currentAP})
 		}
 
-		// Rolling fixed-plan segments starting at switchDate.
 		dpDate := switchDate
 		if dpDate.Before(windowStart) {
 			dpDate = windowStart
@@ -417,7 +435,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		for dpDate.Before(windowEnd) {
 			pr := getFixed(termMonths, dpDate)
 			if pr == nil {
-				// No fixed plan available; fall back to variable for this period.
 				pr = getVar(dpDate)
 			}
 			if pr == nil {
@@ -435,7 +452,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: pr.ap})
 			switches = append(switches, SwitchEvent{
-				EffectiveMonth: monthLabel(dpDate),
+				EffectiveMonth: dateToPeriod(dpDate),
 				ETFPaid:        etf,
 				Plan:           pr.info,
 			})
@@ -444,12 +461,14 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return segs, switches
 	}
 
-	// costForDateRange sums the projected monthly cost for ap over [startDate, endDate)
-	// intersected with our window. Returns (total_cost, months_covered).
+	// costForDateRange sums the projected cost for ap over [startDate, endDate)
+	// intersected with our window. Returns (total_cost, periods_covered).
 	costForDateRange := func(ap activePlan, startDate, endDate time.Time) (float64, float64) {
 		total, covered := 0.0, 0.0
-		for i, monthStart := range months {
-			frac := overlapFrac(monthStart, startDate, endDate)
+		for i := 0; i < numPeriods; i++ {
+			pStart := periodStarts[i]
+			pEnd := periodStarts[i+1]
+			frac := overlapFrac(pStart, pEnd, startDate, endDate)
 			if frac <= 0 {
 				continue
 			}
@@ -463,7 +482,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	var results []StrategyResult
 
 	// ── 1. BASELINE ───────────────────────────────────────────────────────────
-	// Stay on current plan until expiry; roll to variable (re-projected monthly).
+	// Stay on current plan until expiry; roll to variable (re-projected per period).
 	{
 		segs := []planSegment{}
 		if switchDateExpiry.After(windowStart) {
@@ -507,12 +526,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 
 	// ── 7. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
 	// At each decision point (starting from expiry), pick the term that minimises
-	// projected cost-per-month for the remaining window.
+	// projected cost-per-period for the remaining window.
 	{
 		var segs []planSegment
 		var switches []SwitchEvent
 
-		// Current plan from window start to switchDateExpiry.
 		if switchDateExpiry.After(windowStart) {
 			segs = append(segs, planSegment{start: windowStart, end: switchDateExpiry, ap: currentAP})
 		}
@@ -571,7 +589,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: bestPR.ap})
 			switches = append(switches, SwitchEvent{
-				EffectiveMonth: monthLabel(dpDate),
+				EffectiveMonth: dateToPeriod(dpDate),
 				ETFPaid:        0,
 				Plan:           bestPR.info,
 			})

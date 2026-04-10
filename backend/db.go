@@ -141,20 +141,20 @@ func queryLinearPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) 
 			return nil, err
 		}
 
+		// DB columns (kwh500/1000/2000) are average $/kWh at that usage tier.
+		// Compute marginal rate in $/kWh, then convert to ¢/kWh.
 		// 3-point linearity check
-		// rate_AB = marginal ¢/kWh between 500 and 1000 kWh
-		// rate_BC = marginal ¢/kWh between 1000 and 2000 kWh
-		rateAB := (1000*kwh1000 - 500*kwh500) / 500
-		rateBC := (2000*kwh2000 - 1000*kwh1000) / 1000
-		if rateAB == 0 {
+		rateABdol := (1000*kwh1000 - 500*kwh500) / 500   // $/kWh, 500→1000
+		rateBCdol := (2000*kwh2000 - 1000*kwh1000) / 1000 // $/kWh, 1000→2000
+		if rateABdol == 0 {
 			continue
 		}
-		if absf(rateAB-rateBC)/absf(rateAB) > 0.15 {
+		if absf(rateABdol-rateBCdol)/absf(rateABdol) > 0.15 {
 			continue
 		}
-		// base_fee in cents = total_cost_500 - 500*rateAB
-		baseFeeCents := 500*kwh500 - 500*rateAB
-		if baseFeeCents < 0 {
+		// base_fee ($) = total_cost_at_500 - 500 * marginal_rate
+		baseFee := 500*kwh500 - 500*rateABdol
+		if baseFee < 0 {
 			continue
 		}
 		plans = append(plans, LinearPlan{
@@ -163,8 +163,8 @@ func queryLinearPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) 
 			Product:    product,
 			TermValue:  termValue,
 			RateType:   rateType,
-			BaseFee:    baseFeeCents / 100, // convert ¢ to $
-			PerKwhRate: rateAB,
+			BaseFee:    baseFee,          // $
+			PerKwhRate: rateABdol * 100,  // ¢/kWh
 			Renewable:  renewable,
 			Rating:     rating,
 			EnrollURL:  enrollURL,
@@ -180,50 +180,62 @@ func absf(x float64) float64 {
 	return x
 }
 
-// queryMonthlyUsage returns projected usage for the window by aggregating
-// usage_intervals from [histStart, histEnd) and mapping each hist month forward 1 year.
-// Returns usage keyed by "YYYY-MM" (future month) and a map of whether that month
-// has a majority of estimated readings.
-func queryMonthlyUsage(ctx context.Context, pool *pgxpool.Pool, histStart, histEnd time.Time) (map[string]float64, map[string]bool, error) {
-	start := histStart
-	end := histEnd
+// queryPeriodUsage returns projected usage for the 12 T+x periods by aggregating
+// usage_intervals from the historical window (1 year prior to each period).
+// histPeriodStarts[i] is the start of the historical period corresponding to T+i
+// (i.e. windowStart - 1 year + i months). Returns usage keyed by period index (0–11)
+// and whether the majority of readings in that period are estimated.
+func queryPeriodUsage(ctx context.Context, pool *pgxpool.Pool, histPeriodStarts []time.Time) (map[int]float64, map[int]bool, error) {
+	if len(histPeriodStarts) == 0 {
+		return map[int]float64{}, map[int]bool{}, nil
+	}
+	overallStart := histPeriodStarts[0]
+	overallEnd := histPeriodStarts[len(histPeriodStarts)-1].AddDate(0, 1, 0)
 
 	query := `
-		SELECT
-			to_char(interval_start, 'YYYY-MM') AS hist_month,
-			SUM(consumption_kwh)::float8 AS usage_kwh,
-			CASE WHEN COUNT(*) > 0
-				THEN COUNT(*) FILTER (WHERE is_actual = false)::float8 / COUNT(*)::float8
-				ELSE 0
-			END AS estimated_ratio
+		SELECT interval_start, consumption_kwh::float8, is_actual
 		FROM usage_intervals
-		WHERE interval_start >= $1 AND interval_start < $2
-		GROUP BY to_char(interval_start, 'YYYY-MM')`
+		WHERE interval_start >= $1 AND interval_start < $2`
 
-	rows, err := pool.Query(ctx, query, start, end)
+	rows, err := pool.Query(ctx, query, overallStart, overallEnd)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer rows.Close()
 
-	usageMap := make(map[string]float64)
-	estimatedMap := make(map[string]bool)
+	usageMap := make(map[int]float64)
+	totalCount := make(map[int]int)
+	estimatedCount := make(map[int]int)
+
 	for rows.Next() {
-		var histMonth string
-		var usageKwh, estimatedRatio float64
-		if err := rows.Scan(&histMonth, &usageKwh, &estimatedRatio); err != nil {
+		var ts time.Time
+		var kwh float64
+		var isActual bool
+		if err := rows.Scan(&ts, &kwh, &isActual); err != nil {
 			return nil, nil, err
 		}
-		// Map "2025-04" → "2026-04" (add 1 year)
-		t, err := time.Parse("2006-01", histMonth)
-		if err != nil {
-			continue
+		// Find which historical period this interval belongs to.
+		for i, ps := range histPeriodStarts {
+			pe := ps.AddDate(0, 1, 0)
+			if !ts.Before(ps) && ts.Before(pe) {
+				usageMap[i] += kwh
+				totalCount[i]++
+				if !isActual {
+					estimatedCount[i]++
+				}
+				break
+			}
 		}
-		futureMonth := t.AddDate(1, 0, 0).Format("2006-01")
-		usageMap[futureMonth] = usageKwh
-		estimatedMap[futureMonth] = estimatedRatio > 0.5
 	}
-	return usageMap, estimatedMap, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	estimatedMap := make(map[int]bool)
+	for i, cnt := range totalCount {
+		estimatedMap[i] = cnt > 0 && estimatedCount[i] > cnt/2
+	}
+	return usageMap, estimatedMap, nil
 }
 
 // queryHistoricalMinRates returns the minimum kwh1000 rate by calendar month.
