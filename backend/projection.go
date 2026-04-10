@@ -264,6 +264,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		var bestPlan *LinearPlan
 		bestTotalCost := math.MaxFloat64
 		termUsage, numTermPeriods := 0.0, 0
+		counted := false
 		for i := range linearPlans {
 			plan := &linearPlans[i]
 			if plan.RateType == "Variable" || plan.TermValue != term {
@@ -276,11 +277,12 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				}
 				usageKwh, _ := usageForPeriod(j)
 				totalCost += plan.BaseFee + usageKwh*plan.PerKwhRate/100.0
-				if i == 0 { // count periods only once
+				if !counted { // count periods only once (for the first matching plan)
 					termUsage += usageKwh
 					numTermPeriods++
 				}
 			}
+			counted = true
 			if totalCost < bestTotalCost {
 				bestTotalCost = totalCost
 				bestPlan = plan
@@ -594,8 +596,12 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				if planRes == nil {
 					continue
 				}
-				endDate := decisionDate.AddDate(0, termOpt.termMonths, 0)
-				totalCost, periodsCovered := costForDateRange(planRes.plan, decisionDate, endDate)
+				// Evaluate each option over the full remaining window so that
+				// all terms are compared on the same horizon. Using only the
+				// term's own duration biases the comparison toward shorter
+				// terms: a 1-month variable plan only needs to beat a
+				// 12-month average to win, letting it dominate every period.
+				totalCost, periodsCovered := costForDateRange(planRes.plan, decisionDate, windowEnd)
 				if periodsCovered <= 0 {
 					continue
 				}
