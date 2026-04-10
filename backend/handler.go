@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -100,6 +101,35 @@ func handleUsageStatus(pool *pgxpool.Pool, client *SMTClient) http.HandlerFunc {
 			"enabled":  true,
 			"coverage": cov,
 		})
+	}
+}
+
+func handleProjection(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req ProjectionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ContractExpiration == "" {
+			http.Error(w, "contract_expiration is required", http.StatusBadRequest)
+			return
+		}
+		if req.CurrentRateCents <= 0 {
+			http.Error(w, "current_rate_cents must be positive", http.StatusBadRequest)
+			return
+		}
+
+		today := time.Now().Truncate(24 * time.Hour)
+		results, err := computeProjection(r.Context(), pool, req, today)
+		if err != nil {
+			log.Printf("projection error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
 	}
 }
 
