@@ -238,23 +238,44 @@ func queryPeriodUsage(ctx context.Context, pool *pgxpool.Pool, histPeriodStarts 
 	return usageMap, estimatedMap, nil
 }
 
-// queryHistoricalMinRates returns the minimum kwh1000 rate by calendar month.
-// isVariable=true queries variable plans; false queries fixed plans.
-func queryHistoricalMinRates(ctx context.Context, pool *pgxpool.Pool, isVariable bool) (map[string]float64, error) {
-	rateFilter := " AND rate_type != 'Variable'"
+// decomposedRate holds the linearly-decomposed rates for a single historical plan.
+type decomposedRate struct {
+	BaseFee    float64 // $ per month
+	PerKwhRate float64 // ¢/kWh
+}
+
+// queryHistoricalDecomposedPlans returns all linearly-decomposed plans grouped by
+// calendar month ("YYYY-MM"). For each month it uses the last available fetch_date
+// as the representative snapshot. Applies the same 3-point linearity check as
+// queryLinearPlans. isVariable=true queries variable plans; false queries fixed plans.
+func queryHistoricalDecomposedPlans(ctx context.Context, pool *pgxpool.Pool, isVariable bool) (map[string][]decomposedRate, error) {
+	rateFilter := "AND rate_type != 'Variable'"
 	if isVariable {
-		rateFilter = " AND rate_type = 'Variable'"
+		rateFilter = "AND rate_type = 'Variable'"
 	}
+	// Use MAX(fetch_date) per month as a representative snapshot to avoid
+	// returning duplicate plans from every day in the month.
 	query := fmt.Sprintf(`
-		SELECT to_char(fetch_date, 'YYYY-MM') AS month, MIN(kwh1000)::float8 AS min_rate
-		FROM electricity_rates
-		WHERE tdu_company_name ILIKE '%%ONCOR%%'
-		  AND min_usage_fees_credits = false
-		  AND time_of_use = false
-		  AND language = 'English'
-		  AND kwh1000 IS NOT NULL
-		  %s
-		GROUP BY to_char(fetch_date, 'YYYY-MM')`, rateFilter)
+		WITH last_date_per_month AS (
+			SELECT to_char(fetch_date, 'YYYY-MM') AS month, MAX(fetch_date) AS rep_date
+			FROM electricity_rates
+			WHERE tdu_company_name ILIKE '%%ONCOR%%'
+			  AND min_usage_fees_credits = false
+			  AND time_of_use = false
+			  AND language = 'English'
+			  AND kwh500 IS NOT NULL AND kwh1000 IS NOT NULL AND kwh2000 IS NOT NULL
+			  %s
+			GROUP BY to_char(fetch_date, 'YYYY-MM')
+		)
+		SELECT lm.month, e.kwh500::float8, e.kwh1000::float8, e.kwh2000::float8
+		FROM electricity_rates e
+		JOIN last_date_per_month lm ON e.fetch_date = lm.rep_date
+		WHERE e.tdu_company_name ILIKE '%%ONCOR%%'
+		  AND e.min_usage_fees_credits = false
+		  AND e.time_of_use = false
+		  AND e.language = 'English'
+		  AND e.kwh500 IS NOT NULL AND e.kwh1000 IS NOT NULL AND e.kwh2000 IS NOT NULL
+		  %s`, rateFilter, rateFilter)
 
 	rows, err := pool.Query(ctx, query)
 	if err != nil {
@@ -262,14 +283,29 @@ func queryHistoricalMinRates(ctx context.Context, pool *pgxpool.Pool, isVariable
 	}
 	defer rows.Close()
 
-	result := make(map[string]float64)
+	result := make(map[string][]decomposedRate)
 	for rows.Next() {
 		var month string
-		var minRate float64
-		if err := rows.Scan(&month, &minRate); err != nil {
+		var kwh500, kwh1000, kwh2000 float64
+		if err := rows.Scan(&month, &kwh500, &kwh1000, &kwh2000); err != nil {
 			return nil, err
 		}
-		result[month] = minRate
+		rateABdol := (1000*kwh1000 - 500*kwh500) / 500
+		rateBCdol := (2000*kwh2000 - 1000*kwh1000) / 1000
+		if rateABdol == 0 {
+			continue
+		}
+		if absf(rateABdol-rateBCdol)/absf(rateABdol) > 0.15 {
+			continue
+		}
+		baseFee := 500*kwh500 - 500*rateABdol
+		if baseFee < 0 {
+			continue
+		}
+		result[month] = append(result[month], decomposedRate{
+			BaseFee:    baseFee,
+			PerKwhRate: rateABdol * 100,
+		})
 	}
 	return result, rows.Err()
 }
