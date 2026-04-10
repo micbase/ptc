@@ -123,52 +123,6 @@ func lowestConfidence(a, b string) string {
 	return b
 }
 
-// seasonalRatio scales today's market rate to a future decision point using last year's
-// seasonal pattern: ratio = historicalMinRate(decisionMonth-1yr) / historicalMinRate(today-1yr).
-// This assumes the market fluctuates the same way this year as last year.
-func seasonalRatio(decisionPoint, today time.Time, historicalMinRates map[string]float64) float64 {
-	decisionMonthLastYear := time.Date(decisionPoint.Year()-1, decisionPoint.Month(), 1, 0, 0, 0, 0, time.UTC)
-	todayLastYear := time.Date(today.Year()-1, today.Month(), 1, 0, 0, 0, 0, time.UTC)
-	decisionMonthRate, foundDecision := historicalMinRates[decisionMonthLastYear.Format("2006-01")]
-	todayLastYearRate, foundToday := historicalMinRates[todayLastYear.Format("2006-01")]
-	if !foundDecision || !foundToday || todayLastYearRate == 0 {
-		return 1.0
-	}
-	return decisionMonthRate / todayLastYearRate
-}
-
-// planMonthlyCost returns the estimated monthly cost for a plan at the given usage.
-func planMonthlyCost(plan *LinearPlan, usageKwh float64) float64 {
-	return plan.BaseFee + usageKwh*plan.PerKwhRate/100.0
-}
-
-func bestFixedPlanForTerm(plans []LinearPlan, term int, usageKwh float64) *LinearPlan {
-	var bestPlan *LinearPlan
-	for i := range plans {
-		plan := &plans[i]
-		if plan.RateType == "Variable" || plan.TermValue != term {
-			continue
-		}
-		if bestPlan == nil || planMonthlyCost(plan, usageKwh) < planMonthlyCost(bestPlan, usageKwh) {
-			bestPlan = plan
-		}
-	}
-	return bestPlan
-}
-
-func bestVariablePlan(plans []LinearPlan, usageKwh float64) *LinearPlan {
-	var bestPlan *LinearPlan
-	for i := range plans {
-		plan := &plans[i]
-		if plan.RateType != "Variable" {
-			continue
-		}
-		if bestPlan == nil || planMonthlyCost(plan, usageKwh) < planMonthlyCost(bestPlan, usageKwh) {
-			bestPlan = plan
-		}
-	}
-	return bestPlan
-}
 
 type planResult struct {
 	plan activePlan
@@ -273,53 +227,102 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return periodLabel(numPeriods)
 	}
 
-	projectFixed := func(plan *LinearPlan, decisionDate time.Time) (rateCents, baseFee float64) {
-		ratio := seasonalRatio(decisionDate, today, fixedHistoricalRates)
-		return plan.PerKwhRate * ratio, plan.BaseFee * ratio
-	}
-	projectVar := func(plan *LinearPlan, decisionDate time.Time) (rateCents, baseFee float64) {
-		ratio := seasonalRatio(decisionDate, today, varHistoricalRates)
-		return plan.PerKwhRate * ratio, plan.BaseFee * ratio
+	// historicalRateCents returns the projected ¢/kWh for the given month using last
+	// year's best rate for that calendar month. Falls back to the plan's current rate.
+	// historicalMinRates values are in $/kWh (kwh1000 column); multiply by 100 for ¢/kWh.
+	historicalRateCents := func(decisionDate time.Time, historicalRates map[string]float64, fallbackCents float64) float64 {
+		key := time.Date(decisionDate.Year()-1, decisionDate.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01")
+		if rate, ok := historicalRates[key]; ok {
+			return rate * 100
+		}
+		return fallbackCents
 	}
 
+	// getFixed selects the best fixed plan for the given term and decision date.
+	// Selection uses today's plan rates and actual per-period usage for each period
+	// covered by the term. The projected rate shown is last year's same-month rate.
 	getFixed := func(term int, decisionDate time.Time) *planResult {
-		plan := bestFixedPlanForTerm(linearPlans, term, avgUsage)
-		if plan == nil {
+		termEnd := decisionDate.AddDate(0, term, 0)
+		var bestPlan *LinearPlan
+		bestTotalCost := math.MaxFloat64
+		for i := range linearPlans {
+			plan := &linearPlans[i]
+			if plan.RateType == "Variable" || plan.TermValue != term {
+				continue
+			}
+			totalCost := 0.0
+			for j := 0; j < numPeriods; j++ {
+				if !periodCoversSegment(periodStarts[j], periodStarts[j+1], decisionDate, termEnd) {
+					continue
+				}
+				usageKwh, _ := usageForPeriod(j)
+				totalCost += plan.BaseFee + usageKwh*plan.PerKwhRate/100.0
+			}
+			if totalCost < bestTotalCost {
+				bestTotalCost = totalCost
+				bestPlan = plan
+			}
+		}
+		if bestPlan == nil {
 			return nil
 		}
-		rateCents, baseFee := projectFixed(plan, decisionDate)
+		// Historical composite rate: baseFee is baked in, so set baseFee=0.
+		projRateCents := historicalRateCents(decisionDate, fixedHistoricalRates, bestPlan.PerKwhRate)
 		return &planResult{
 			plan: activePlan{
-				label:     fmt.Sprintf("%s – %s (%dm Fixed)", plan.RepCompany, plan.Product, term),
-				rateCents: rateCents,
-				baseFee:   baseFee,
+				label:     fmt.Sprintf("%s – %s (%dm Fixed)", bestPlan.RepCompany, bestPlan.Product, term),
+				rateCents: projRateCents,
+				baseFee:   0,
 			},
 			info: ProjectionPlanInfo{
-				IDKey: plan.IDKey, RepCompany: plan.RepCompany, Product: plan.Product,
-				TermValue: plan.TermValue, RateType: plan.RateType,
-				ProjectedRateCents: rateCents, ProjectedBaseFee: baseFee,
-				Renewable: plan.Renewable, Rating: plan.Rating, EnrollURL: plan.EnrollURL,
+				IDKey: bestPlan.IDKey, RepCompany: bestPlan.RepCompany, Product: bestPlan.Product,
+				TermValue: bestPlan.TermValue, RateType: bestPlan.RateType,
+				ProjectedRateCents: projRateCents, ProjectedBaseFee: 0,
+				Renewable: bestPlan.Renewable, Rating: bestPlan.Rating, EnrollURL: bestPlan.EnrollURL,
 			},
 		}
 	}
 
+	// getVar selects the best variable plan for the period containing decisionDate.
+	// Selection uses today's plan rates and actual usage for that period.
+	// The projected rate shown is last year's same-month rate.
 	getVar := func(decisionDate time.Time) *planResult {
-		plan := bestVariablePlan(linearPlans, avgUsage)
-		if plan == nil {
+		// Find the period index for this decision date (always a period boundary).
+		periodUsage := avgUsage
+		for j := 0; j < numPeriods; j++ {
+			if periodStarts[j].Equal(decisionDate) {
+				periodUsage, _ = usageForPeriod(j)
+				break
+			}
+		}
+		var bestPlan *LinearPlan
+		bestCost := math.MaxFloat64
+		for i := range linearPlans {
+			plan := &linearPlans[i]
+			if plan.RateType != "Variable" {
+				continue
+			}
+			cost := plan.BaseFee + periodUsage*plan.PerKwhRate/100.0
+			if cost < bestCost {
+				bestCost = cost
+				bestPlan = plan
+			}
+		}
+		if bestPlan == nil {
 			return nil
 		}
-		rateCents, baseFee := projectVar(plan, decisionDate)
+		projRateCents := historicalRateCents(decisionDate, varHistoricalRates, bestPlan.PerKwhRate)
 		return &planResult{
 			plan: activePlan{
-				label:     fmt.Sprintf("%s – %s (Variable)", plan.RepCompany, plan.Product),
-				rateCents: rateCents,
-				baseFee:   baseFee,
+				label:     fmt.Sprintf("%s – %s (Variable)", bestPlan.RepCompany, bestPlan.Product),
+				rateCents: projRateCents,
+				baseFee:   0,
 			},
 			info: ProjectionPlanInfo{
-				IDKey: plan.IDKey, RepCompany: plan.RepCompany, Product: plan.Product,
-				TermValue: plan.TermValue, RateType: "Variable",
-				ProjectedRateCents: rateCents, ProjectedBaseFee: baseFee,
-				Renewable: plan.Renewable, Rating: plan.Rating, EnrollURL: plan.EnrollURL,
+				IDKey: bestPlan.IDKey, RepCompany: bestPlan.RepCompany, Product: bestPlan.Product,
+				TermValue: bestPlan.TermValue, RateType: "Variable",
+				ProjectedRateCents: projRateCents, ProjectedBaseFee: 0,
+				Renewable: bestPlan.Renewable, Rating: bestPlan.Rating, EnrollURL: bestPlan.EnrollURL,
 			},
 		}
 	}
