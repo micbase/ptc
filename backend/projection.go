@@ -112,10 +112,12 @@ func monthLabel(t time.Time) string {
 	return t.Format("2006-01")
 }
 
-func monthConfidence(idx int) string {
-	if idx < 2 {
+// monthConfidence returns confidence based on how far monthStart is from today.
+func monthConfidence(monthStart, today time.Time) string {
+	monthsAhead := (monthStart.Year()-today.Year())*12 + int(monthStart.Month()) - int(today.Month())
+	if monthsAhead < 2 {
 		return "high"
-	} else if idx < 6 {
+	} else if monthsAhead < 6 {
 		return "medium"
 	}
 	return "low"
@@ -179,11 +181,36 @@ func round2(v float64) float64 {
 }
 
 func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategyResult, error) {
+	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
+	if err != nil {
+		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
+	}
+	// Normalize to UTC midnight
+	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
+
+	// 12-month window anchored to expiry (or today if already expired).
+	windowStart := expiry
+	if expiry.Before(today) {
+		windowStart = today
+	}
+	windowEnd := windowStart.AddDate(0, 12, 0)
+
+	// Enumerate all calendar months overlapping [windowStart, windowEnd).
+	// A mid-month windowStart (e.g. May 15) yields 13 months: partial May … partial May+1yr.
+	var months []time.Time
+	for m := time.Date(windowStart.Year(), windowStart.Month(), 1, 0, 0, 0, 0, time.UTC); m.Before(windowEnd); m = time.Date(m.Year(), m.Month()+1, 1, 0, 0, 0, 0, time.UTC) {
+		months = append(months, m)
+	}
+
+	// Historical usage range: 1 year prior to the window's calendar-month span.
+	histStart := time.Date(months[0].Year()-1, months[0].Month(), 1, 0, 0, 0, 0, time.UTC)
+	histEnd := time.Date(months[len(months)-1].Year()-1, months[len(months)-1].Month()+1, 1, 0, 0, 0, 0, time.UTC)
+
 	linearPlans, err := queryLinearPlans(ctx, pool, today)
 	if err != nil {
 		return nil, fmt.Errorf("queryLinearPlans: %w", err)
 	}
-	usageMap, estimatedMap, err := queryMonthlyUsage(ctx, pool, today)
+	usageMap, estimatedMap, err := queryMonthlyUsage(ctx, pool, histStart, histEnd)
 	if err != nil {
 		return nil, fmt.Errorf("queryMonthlyUsage: %w", err)
 	}
@@ -195,22 +222,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	if err != nil {
 		return nil, fmt.Errorf("queryHistoricalMinRates(variable): %w", err)
 	}
-
-	// 12-month window: [windowStart, windowEnd)
-	windowStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
-	windowEnd := time.Date(today.Year(), today.Month()+12, 1, 0, 0, 0, 0, time.UTC)
-
-	months := make([]time.Time, 12)
-	for i := 0; i < 12; i++ {
-		months[i] = time.Date(today.Year(), today.Month()+time.Month(i), 1, 0, 0, 0, 0, time.UTC)
-	}
-
-	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
-	if err != nil {
-		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
-	}
-	// Normalize to UTC midnight
-	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
 
 	// switchDateExpiry: when at-expiry strategies start the new plan.
 	// If expiry is before the window, treat as windowStart (contract already expired).
@@ -313,7 +324,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// pro-rated by the fraction of days they cover. Variable segments (isVar=true)
 	// are re-projected to the specific calendar month rather than using a fixed rate.
 	buildBreakdown := func(segs []planSegment) ([]MonthlyBreakdown, float64) {
-		bd := make([]MonthlyBreakdown, 12)
+		bd := make([]MonthlyBreakdown, len(months))
 		total := 0.0
 		for i, monthStart := range months {
 			u, isEst := usage(i)
@@ -348,7 +359,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				RateCents:        round2(blendRate),
 				BaseFee:          round2(blendBase),
 				MonthlyCost:      round2(cost),
-				Confidence:       monthConfidence(i),
+				Confidence:       monthConfidence(monthStart, today),
 			}
 		}
 		return bd, total
@@ -358,9 +369,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		bd, total := buildBreakdown(segs)
 		conf := "high"
 		for _, sw := range switches {
-			for i, m := range months {
+			for _, m := range months {
 				if monthLabel(m) == sw.EffectiveMonth {
-					conf = lowestConfidence(conf, monthConfidence(i))
+					conf = lowestConfidence(conf, monthConfidence(m, today))
 				}
 			}
 		}

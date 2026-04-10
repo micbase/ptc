@@ -180,14 +180,13 @@ func absf(x float64) float64 {
 	return x
 }
 
-// queryMonthlyUsage returns projected usage for the 12-month window by aggregating
-// usage_intervals from the same calendar month one year prior.
+// queryMonthlyUsage returns projected usage for the window by aggregating
+// usage_intervals from [histStart, histEnd) and mapping each hist month forward 1 year.
 // Returns usage keyed by "YYYY-MM" (future month) and a map of whether that month
 // has a majority of estimated readings.
-func queryMonthlyUsage(ctx context.Context, pool *pgxpool.Pool, today time.Time) (map[string]float64, map[string]bool, error) {
-	// Query 1-year-ago data for the 12-month window
-	start := time.Date(today.Year()-1, today.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end := start.AddDate(1, 0, 0)
+func queryMonthlyUsage(ctx context.Context, pool *pgxpool.Pool, histStart, histEnd time.Time) (map[string]float64, map[string]bool, error) {
+	start := histStart
+	end := histEnd
 
 	query := `
 		SELECT
