@@ -59,13 +59,13 @@ export interface ProjectionPlanInfo {
 }
 
 export interface SwitchEvent {
-  effective_month: string
+  effective_period: string
   etf_paid: number
   plan: ProjectionPlanInfo
 }
 
-export interface MonthlyBreakdown {
-  month: string         // "T+N" period label
+export interface PeriodBreakdown {
+  period: string        // "T+N" period label
   period_start: string  // "YYYY-MM-DD"
   period_end: string    // "YYYY-MM-DD" (inclusive last day)
   usage_kwh: number
@@ -73,7 +73,7 @@ export interface MonthlyBreakdown {
   active_plan_label: string
   rate_cents: number
   base_fee: number
-  monthly_cost: number
+  period_cost: number
   confidence: string
 }
 
@@ -87,5 +87,5 @@ export interface StrategyResult {
   switch_count: number
   confidence: string
   switches: SwitchEvent[]
-  monthly_breakdown: MonthlyBreakdown[]
+  period_breakdown: PeriodBreakdown[]
 }
