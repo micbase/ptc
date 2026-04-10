@@ -37,3 +37,8 @@ export interface ChartPoint {
   fetch_date: string
   kwh1000: number
 }
+
+export interface UsageMonth {
+  month: string
+  total_kwh: number
+}

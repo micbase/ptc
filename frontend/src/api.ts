@@ -1,4 +1,4 @@
-import type { ElectricityRate, ChartPoint } from './types'
+import type { ElectricityRate, ChartPoint, UsageMonth } from './types'
 
 const BASE = '/api'
 
@@ -23,6 +23,18 @@ export async function fetchLatestDate(): Promise<string> {
 
 export async function triggerFetch(): Promise<{ upserted: number; message: string }> {
   const res = await fetch(`${BASE}/fetch`, { method: 'POST' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function fetchUsageMonthly(): Promise<UsageMonth[]> {
+  const res = await fetch(`${BASE}/usage/monthly`)
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) ?? []
+}
+
+export async function fetchUsageAvg(): Promise<{ avg_monthly_kwh: number }> {
+  const res = await fetch(`${BASE}/usage/avg`)
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
