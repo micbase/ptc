@@ -1,4 +1,4 @@
-import type { ElectricityRate, ChartPoint } from './types'
+import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategyResult } from './types'
 
 const BASE = '/api'
 
@@ -23,6 +23,16 @@ export async function fetchLatestDate(): Promise<string> {
 
 export async function triggerFetch(): Promise<{ upserted: number; message: string }> {
   const res = await fetch(`${BASE}/fetch`, { method: 'POST' })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function fetchProjection(req: ProjectionRequest): Promise<StrategyResult[]> {
+  const res = await fetch(`${BASE}/projection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }

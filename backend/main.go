@@ -57,6 +57,7 @@ func main() {
 	r.Post("/api/fetch", handleFetch(pool))
 	r.Get("/api/usage/status", handleUsageStatus(pool, smtClient))
 	r.Post("/api/usage/backfill", handleUsageBackfill(pool, smtClient))
+	r.Post("/api/projection", handleProjection(pool))
 
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {
