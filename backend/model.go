@@ -39,3 +39,8 @@ type ChartPoint struct {
 	FetchDate string  `json:"fetch_date"`
 	Kwh1000   float64 `json:"kwh1000"`
 }
+
+type UsageMonth struct {
+	Month    string  `json:"month"`
+	TotalKwh float64 `json:"total_kwh"`
+}

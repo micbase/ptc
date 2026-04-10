@@ -103,6 +103,32 @@ func handleUsageStatus(pool *pgxpool.Pool, client *SMTClient) http.HandlerFunc {
 	}
 }
 
+func handleUsageMonthly(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		months, err := queryUsageMonthly(r.Context(), pool)
+		if err != nil {
+			log.Printf("usage/monthly error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(months)
+	}
+}
+
+func handleUsageAvg(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		avg, err := queryUsageAvg(r.Context(), pool)
+		if err != nil {
+			log.Printf("usage/avg error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]float64{"avg_monthly_kwh": avg})
+	}
+}
+
 func handleCharts(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chartType := r.URL.Query().Get("type")

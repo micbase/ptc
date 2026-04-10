@@ -88,6 +88,46 @@ func queryChart(ctx context.Context, pool *pgxpool.Pool, chartType string) ([]Ch
 	return points, nil
 }
 
+func queryUsageMonthly(ctx context.Context, pool *pgxpool.Pool) ([]UsageMonth, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT date_trunc('month', interval_start)::date::text AS month,
+		       ROUND(SUM(consumption_kwh)::numeric, 2)::float8 AS total_kwh
+		FROM usage_intervals
+		GROUP BY 1 ORDER BY 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	months := make([]UsageMonth, 0)
+	for rows.Next() {
+		var m UsageMonth
+		if err := rows.Scan(&m.Month, &m.TotalKwh); err != nil {
+			return nil, err
+		}
+		months = append(months, m)
+	}
+	return months, rows.Err()
+}
+
+func queryUsageAvg(ctx context.Context, pool *pgxpool.Pool) (float64, error) {
+	var avg float64
+	err := pool.QueryRow(ctx, `
+		SELECT COALESCE(ROUND(AVG(total_kwh)::numeric, 2)::float8, 0)
+		FROM (
+			SELECT date_trunc('month', interval_start) AS month,
+			       SUM(consumption_kwh) AS total_kwh
+			FROM usage_intervals
+			WHERE date_trunc('month', interval_start) < date_trunc('month', CURRENT_DATE)
+			  AND date_trunc('month', interval_start) >= date_trunc('month', CURRENT_DATE) - INTERVAL '12 months'
+			GROUP BY 1
+		) sub`).Scan(&avg)
+	if err != nil {
+		return 0, err
+	}
+	return avg, nil
+}
+
 func queryLatestDate(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	var d time.Time
 	err := pool.QueryRow(ctx, `SELECT max(fetch_date) FROM electricity_rates`).Scan(&d)
