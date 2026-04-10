@@ -144,28 +144,33 @@ func seasonalRatio(decisionPoint, today time.Time, rates map[string]float64) flo
 	return num / den
 }
 
-func bestFixedPlanForTerm(plans []LinearPlan, term int) *LinearPlan {
+// planMonthlyCost returns the estimated monthly cost for a plan at the given usage.
+func planMonthlyCost(p *LinearPlan, usageKwh float64) float64 {
+	return p.BaseFee + usageKwh*p.PerKwhRate/100.0
+}
+
+func bestFixedPlanForTerm(plans []LinearPlan, term int, usageKwh float64) *LinearPlan {
 	var best *LinearPlan
 	for i := range plans {
 		p := &plans[i]
 		if p.RateType == "Variable" || p.TermValue != term {
 			continue
 		}
-		if best == nil || p.PerKwhRate < best.PerKwhRate {
+		if best == nil || planMonthlyCost(p, usageKwh) < planMonthlyCost(best, usageKwh) {
 			best = p
 		}
 	}
 	return best
 }
 
-func bestVariablePlan(plans []LinearPlan) *LinearPlan {
+func bestVariablePlan(plans []LinearPlan, usageKwh float64) *LinearPlan {
 	var best *LinearPlan
 	for i := range plans {
 		p := &plans[i]
 		if p.RateType != "Variable" {
 			continue
 		}
-		if best == nil || p.PerKwhRate < best.PerKwhRate {
+		if best == nil || planMonthlyCost(p, usageKwh) < planMonthlyCost(best, usageKwh) {
 			best = p
 		}
 	}
@@ -285,7 +290,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	}
 
 	getFixed := func(term int, dp time.Time) *planResult {
-		p := bestFixedPlanForTerm(linearPlans, term)
+		p := bestFixedPlanForTerm(linearPlans, term, avgUsage)
 		if p == nil {
 			return nil
 		}
@@ -306,7 +311,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	}
 
 	getVar := func(dp time.Time) *planResult {
-		p := bestVariablePlan(linearPlans)
+		p := bestVariablePlan(linearPlans, avgUsage)
 		if p == nil {
 			return nil
 		}
@@ -551,7 +556,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			dpDate = windowStart
 		}
 		for dpDate.Before(windowEnd) {
-			bestCPM := math.MaxFloat64
+			bestCostPerPeriod := math.MaxFloat64
 			var bestPR *planResult
 			bestTerm := 1
 
@@ -571,9 +576,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				if covered <= 0 {
 					continue
 				}
-				cpm := cost / covered
-				if cpm < bestCPM {
-					bestCPM = cpm
+				costPerPeriod := cost / covered
+				if costPerPeriod < bestCostPerPeriod {
+					bestCostPerPeriod = costPerPeriod
 					bestPR = pr
 					bestTerm = termLen
 				}
