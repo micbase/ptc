@@ -73,11 +73,39 @@ type StrategyResult struct {
 	MonthlyBreakdown       []MonthlyBreakdown `json:"monthly_breakdown"`
 }
 
-// activePlan holds the effective rates for a given month in a strategy.
+// planSegment is a half-open interval [start, end) covered by a single plan.
+// If isVar is true the ap field is ignored and the variable rate is re-projected
+// to the specific calendar month at breakdown time.
+type planSegment struct {
+	start time.Time
+	end   time.Time
+	ap    activePlan
+	isVar bool
+}
+
+// activePlan holds the effective rates for a plan within a segment.
 type activePlan struct {
 	label     string
 	rateCents float64
 	baseFee   float64
+}
+
+// overlapFrac returns the fraction of the calendar month starting at monthStart
+// that is covered by the segment [segStart, segEnd).
+func overlapFrac(monthStart, segStart, segEnd time.Time) float64 {
+	monthEnd := time.Date(monthStart.Year(), monthStart.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	lo, hi := segStart, segEnd
+	if lo.Before(monthStart) {
+		lo = monthStart
+	}
+	if hi.After(monthEnd) {
+		hi = monthEnd
+	}
+	if !hi.After(lo) {
+		return 0
+	}
+	monthDays := monthEnd.Sub(monthStart).Hours() / 24
+	return hi.Sub(lo).Hours() / 24 / monthDays
 }
 
 func monthLabel(t time.Time) string {
@@ -101,8 +129,7 @@ func lowestConfidence(a, b string) string {
 	return b
 }
 
-// seasonalRatio computes the seasonal adjustment factor for a future decision month.
-// Uses historical minimum rates: same-month-last-year / today's-month-last-year.
+// seasonalRatio computes historical_min_rate(decisionMonth-1yr) / historical_min_rate(today-1yr).
 func seasonalRatio(decisionMonth, today time.Time, rates map[string]float64) float64 {
 	sameLY := time.Date(decisionMonth.Year()-1, decisionMonth.Month(), 1, 0, 0, 0, 0, time.UTC)
 	todayLY := time.Date(today.Year()-1, today.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -114,7 +141,6 @@ func seasonalRatio(decisionMonth, today time.Time, rates map[string]float64) flo
 	return num / den
 }
 
-// bestFixedPlanForTerm returns the plan with the lowest PerKwhRate for the given term.
 func bestFixedPlanForTerm(plans []LinearPlan, term int) *LinearPlan {
 	var best *LinearPlan
 	for i := range plans {
@@ -129,7 +155,6 @@ func bestFixedPlanForTerm(plans []LinearPlan, term int) *LinearPlan {
 	return best
 }
 
-// bestVariablePlan returns the variable plan with the lowest PerKwhRate.
 func bestVariablePlan(plans []LinearPlan) *LinearPlan {
 	var best *LinearPlan
 	for i := range plans {
@@ -149,25 +174,19 @@ type planResult struct {
 	info ProjectionPlanInfo
 }
 
-// round2 rounds to 2 decimal places.
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
 
 func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategyResult, error) {
-	// 1. Query linear plans for today
 	linearPlans, err := queryLinearPlans(ctx, pool, today)
 	if err != nil {
 		return nil, fmt.Errorf("queryLinearPlans: %w", err)
 	}
-
-	// 2. Query monthly usage (1 year prior)
 	usageMap, estimatedMap, err := queryMonthlyUsage(ctx, pool, today)
 	if err != nil {
 		return nil, fmt.Errorf("queryMonthlyUsage: %w", err)
 	}
-
-	// 3. Query historical min rates for seasonal ratio
 	fixedRates, err := queryHistoricalMinRates(ctx, pool, false)
 	if err != nil {
 		return nil, fmt.Errorf("queryHistoricalMinRates(fixed): %w", err)
@@ -177,38 +196,40 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return nil, fmt.Errorf("queryHistoricalMinRates(variable): %w", err)
 	}
 
-	// 4. Build 12-month window starting from today's month
+	// 12-month window: [windowStart, windowEnd)
+	windowStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(today.Year(), today.Month()+12, 1, 0, 0, 0, 0, time.UTC)
+
 	months := make([]time.Time, 12)
 	for i := 0; i < 12; i++ {
 		months[i] = time.Date(today.Year(), today.Month()+time.Month(i), 1, 0, 0, 0, 0, time.UTC)
 	}
 
-	// 5. Parse contract expiration
 	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
 	if err != nil {
 		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
 	}
+	// Normalize to UTC midnight
+	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
 
-	// firstFreeIdx: index of first month where a new plan can start.
-	// Current plan covers any month whose first day is on or before the expiry date.
-	firstFreeIdx := 0
-	for i, m := range months {
-		if !m.After(expiry) {
-			firstFreeIdx = i + 1
-		}
-	}
-	if firstFreeIdx > 12 {
-		firstFreeIdx = 12
+	// switchDateExpiry: when at-expiry strategies start the new plan.
+	// If expiry is before the window, treat as windowStart (contract already expired).
+	switchDateExpiry := expiry
+	if switchDateExpiry.Before(windowStart) {
+		switchDateExpiry = windowStart
 	}
 
-	// ETF applies if switching today is before (expiry - 14 days)
+	// switchDateNow: today (the actual calendar date, may be mid-month).
+	switchDateNow := today
+
+	// ETF applies if switching today is before (expiry − 14 days).
 	etfCutoff := expiry.AddDate(0, 0, -14)
 	etfOnSwitchNow := 0.0
 	if today.Before(etfCutoff) {
 		etfOnSwitchNow = req.ETFAmount
 	}
 
-	// Average usage for fallback
+	// Average usage fallback
 	totalUsage, usageCount := 0.0, 0
 	for _, m := range months {
 		if u, ok := usageMap[monthLabel(m)]; ok && u > 0 {
@@ -225,23 +246,20 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		ml := monthLabel(months[idx])
 		u, ok := usageMap[ml]
 		if !ok || u == 0 {
-			return avgUsage, true // estimated
+			return avgUsage, true
 		}
 		return u, estimatedMap[ml]
 	}
 
-	// projectFixed: project a fixed plan's rates to a decision month
 	projectFixed := func(p *LinearPlan, dp time.Time) (rateCents, baseFee float64) {
 		r := seasonalRatio(dp, today, fixedRates)
 		return p.PerKwhRate * r, p.BaseFee * r
 	}
-	// projectVar: project a variable plan's rates to a decision month
 	projectVar := func(p *LinearPlan, dp time.Time) (rateCents, baseFee float64) {
 		r := seasonalRatio(dp, today, varRates)
 		return p.PerKwhRate * r, p.BaseFee * r
 	}
 
-	// getPlanResult builds a planResult for a fixed plan at a given decision month
 	getFixed := func(term int, dp time.Time) *planResult {
 		p := bestFixedPlanForTerm(linearPlans, term)
 		if p == nil {
@@ -255,16 +273,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				baseFee:   bf,
 			},
 			info: ProjectionPlanInfo{
-				IDKey:              p.IDKey,
-				RepCompany:         p.RepCompany,
-				Product:            p.Product,
-				TermValue:          p.TermValue,
-				RateType:           p.RateType,
-				ProjectedRateCents: rc,
-				ProjectedBaseFee:   bf,
-				Renewable:          p.Renewable,
-				Rating:             p.Rating,
-				EnrollURL:          p.EnrollURL,
+				IDKey: p.IDKey, RepCompany: p.RepCompany, Product: p.Product,
+				TermValue: p.TermValue, RateType: p.RateType,
+				ProjectedRateCents: rc, ProjectedBaseFee: bf,
+				Renewable: p.Renewable, Rating: p.Rating, EnrollURL: p.EnrollURL,
 			},
 		}
 	}
@@ -282,43 +294,59 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				baseFee:   bf,
 			},
 			info: ProjectionPlanInfo{
-				IDKey:              p.IDKey,
-				RepCompany:         p.RepCompany,
-				Product:            p.Product,
-				TermValue:          p.TermValue,
-				RateType:           "Variable",
-				ProjectedRateCents: rc,
-				ProjectedBaseFee:   bf,
-				Renewable:          p.Renewable,
-				Rating:             p.Rating,
-				EnrollURL:          p.EnrollURL,
+				IDKey: p.IDKey, RepCompany: p.RepCompany, Product: p.Product,
+				TermValue: p.TermValue, RateType: "Variable",
+				ProjectedRateCents: rc, ProjectedBaseFee: bf,
+				Renewable: p.Renewable, Rating: p.Rating, EnrollURL: p.EnrollURL,
 			},
 		}
 	}
 
-	// currentAP is the current plan as an activePlan
 	currentAP := activePlan{
 		label:     "Current plan",
 		rateCents: req.CurrentRateCents,
 		baseFee:   req.CurrentBaseFee,
 	}
 
-	// buildMonthlyBreakdown constructs the monthly breakdown from plans array
-	buildMonthlyBreakdown := func(plans [12]activePlan) ([]MonthlyBreakdown, float64) {
+	// ── buildMonthlyBreakdown ─────────────────────────────────────────────────
+	// For each calendar month, sums contributions from all overlapping segments
+	// pro-rated by the fraction of days they cover. Variable segments (isVar=true)
+	// are re-projected to the specific calendar month rather than using a fixed rate.
+	buildBreakdown := func(segs []planSegment) ([]MonthlyBreakdown, float64) {
 		bd := make([]MonthlyBreakdown, 12)
 		total := 0.0
-		for i, m := range months {
+		for i, monthStart := range months {
 			u, isEst := usage(i)
-			p := plans[i]
-			cost := p.baseFee + u*p.rateCents/100.0
+			cost, blendRate, blendBase := 0.0, 0.0, 0.0
+			label := ""
+			for _, seg := range segs {
+				frac := overlapFrac(monthStart, seg.start, seg.end)
+				if frac <= 0 {
+					continue
+				}
+				ap := seg.ap
+				if seg.isVar {
+					if vp := getVar(monthStart); vp != nil {
+						ap = vp.ap
+					}
+				}
+				cost += frac * (ap.baseFee + u*ap.rateCents/100.0)
+				blendRate += frac * ap.rateCents
+				blendBase += frac * ap.baseFee
+				if label == "" {
+					label = ap.label
+				} else {
+					label = label + " / " + ap.label
+				}
+			}
 			total += cost
 			bd[i] = MonthlyBreakdown{
-				Month:            monthLabel(m),
+				Month:            monthLabel(monthStart),
 				UsageKwh:         round2(u),
 				UsageIsEstimated: isEst,
-				ActivePlanLabel:  p.label,
-				RateCents:        round2(p.rateCents),
-				BaseFee:          round2(p.baseFee),
+				ActivePlanLabel:  label,
+				RateCents:        round2(blendRate),
+				BaseFee:          round2(blendBase),
 				MonthlyCost:      round2(cost),
 				Confidence:       monthConfidence(i),
 			}
@@ -326,11 +354,8 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return bd, total
 	}
 
-	// buildResult assembles a StrategyResult
-	buildResult := func(id, name string, plans [12]activePlan, switches []SwitchEvent, etfPaid float64) StrategyResult {
-		bd, total := buildMonthlyBreakdown(plans)
-
-		// Strategy confidence = lowest confidence among switch months
+	buildResult := func(id, name string, segs []planSegment, switches []SwitchEvent, etfPaid float64) StrategyResult {
+		bd, total := buildBreakdown(segs)
 		conf := "high"
 		for _, sw := range switches {
 			for i, m := range months {
@@ -339,11 +364,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				}
 			}
 		}
-
 		if switches == nil {
 			switches = []SwitchEvent{}
 		}
-
 		return StrategyResult{
 			StrategyID:       id,
 			StrategyName:     name,
@@ -356,204 +379,197 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		}
 	}
 
-	// perMonthCost computes projected cost per month for a plan over a range [start, end)
-	perMonthCost := func(ap activePlan, startIdx, endIdx int) float64 {
-		if endIdx <= startIdx {
-			return math.MaxFloat64
+	// ── buildFixedRolling ─────────────────────────────────────────────────────
+	// Builds date-based plan segments for a rolling fixed-term strategy.
+	// switchDate: the date the first new plan starts (may be mid-month).
+	// termMonths: plan term in calendar months (3, 6, or 12).
+	// etf0: ETF amount charged on the first switch (0 if none).
+	buildFixedRolling := func(switchDate time.Time, termMonths int, etf0 float64) ([]planSegment, []SwitchEvent) {
+		var segs []planSegment
+		var switches []SwitchEvent
+
+		// Pre-switch: current plan from window start to the switch date.
+		if switchDate.After(windowStart) {
+			end := switchDate
+			if end.After(windowEnd) {
+				end = windowEnd
+			}
+			segs = append(segs, planSegment{start: windowStart, end: end, ap: currentAP})
 		}
-		total := 0.0
-		for i := startIdx; i < endIdx; i++ {
+
+		// Rolling fixed-plan segments starting at switchDate.
+		dpDate := switchDate
+		if dpDate.Before(windowStart) {
+			dpDate = windowStart
+		}
+		first := true
+		for dpDate.Before(windowEnd) {
+			pr := getFixed(termMonths, dpDate)
+			if pr == nil {
+				// No fixed plan available; fall back to variable for this period.
+				pr = getVar(dpDate)
+			}
+			if pr == nil {
+				break
+			}
+			nextDate := dpDate.AddDate(0, termMonths, 0)
+			segEnd := nextDate
+			if segEnd.After(windowEnd) {
+				segEnd = windowEnd
+			}
+			etf := 0.0
+			if first {
+				etf = etf0
+				first = false
+			}
+			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: pr.ap})
+			switches = append(switches, SwitchEvent{
+				EffectiveMonth: monthLabel(dpDate),
+				ETFPaid:        etf,
+				Plan:           pr.info,
+			})
+			dpDate = nextDate
+		}
+		return segs, switches
+	}
+
+	// costForDateRange sums the projected monthly cost for ap over [startDate, endDate)
+	// intersected with our window. Returns (total_cost, months_covered).
+	costForDateRange := func(ap activePlan, startDate, endDate time.Time) (float64, float64) {
+		total, covered := 0.0, 0.0
+		for i, monthStart := range months {
+			frac := overlapFrac(monthStart, startDate, endDate)
+			if frac <= 0 {
+				continue
+			}
 			u, _ := usage(i)
-			total += ap.baseFee + u*ap.rateCents/100.0
+			total += frac * (ap.baseFee + u*ap.rateCents/100.0)
+			covered += frac
 		}
-		return total / float64(endIdx-startIdx)
+		return total, covered
 	}
 
 	var results []StrategyResult
 
-	// ── 1. BASELINE ──────────────────────────────────────────────────────────────
+	// ── 1. BASELINE ───────────────────────────────────────────────────────────
+	// Stay on current plan until expiry; roll to variable (re-projected monthly).
 	{
-		var plans [12]activePlan
-		for i := range plans {
-			if i < firstFreeIdx {
-				plans[i] = currentAP
-			} else {
-				// Roll to best variable at that specific month
-				vp := getVar(months[i])
-				if vp != nil {
-					plans[i] = vp.ap
-				} else {
-					plans[i] = currentAP
-				}
-			}
+		segs := []planSegment{}
+		if switchDateExpiry.After(windowStart) {
+			segs = append(segs, planSegment{start: windowStart, end: switchDateExpiry, ap: currentAP})
 		}
-		results = append(results, buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", plans, nil, 0))
-	}
-
-	// Helper: fill from startIdx onwards with a rolling plan of given term length,
-	// picking the best plan (fixed term or variable) at each decision point.
-	buildRollingStrategy := func(startIdx, termMonths int, isVar bool, dp0ETF float64) ([12]activePlan, []SwitchEvent) {
-		var plans [12]activePlan
-		var switches []SwitchEvent
-
-		// Fill current plan for months before startIdx
-		for i := 0; i < startIdx && i < 12; i++ {
-			plans[i] = currentAP
+		if switchDateExpiry.Before(windowEnd) {
+			segs = append(segs, planSegment{start: switchDateExpiry, end: windowEnd, isVar: true})
 		}
-
-		dpIdx := startIdx
-		firstSwitch := true
-		for dpIdx < 12 {
-			dp := months[dpIdx]
-			endIdx := dpIdx + termMonths
-			if isVar {
-				endIdx = dpIdx + 1
-			}
-
-			var pr *planResult
-			if isVar {
-				pr = getVar(dp)
-			} else {
-				pr = getFixed(termMonths, dp)
-				if pr == nil {
-					pr = getVar(dp) // fallback to variable
-				}
-			}
-
-			etfThisSwitch := 0.0
-			if firstSwitch {
-				etfThisSwitch = dp0ETF
-				firstSwitch = false
-			}
-
-			if pr != nil {
-				sw := SwitchEvent{
-					EffectiveMonth: monthLabel(dp),
-					ETFPaid:        etfThisSwitch,
-					Plan:           pr.info,
-				}
-				switches = append(switches, sw)
-				for i := dpIdx; i < endIdx && i < 12; i++ {
-					plans[i] = pr.ap
-				}
-			} else {
-				for i := dpIdx; i < endIdx && i < 12; i++ {
-					plans[i] = currentAP
-				}
-			}
-			dpIdx = endIdx
-		}
-		return plans, switches
+		results = append(results, buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", segs, nil, 0))
 	}
 
 	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
 	{
-		plans, switches := buildRollingStrategy(firstFreeIdx, 12, false, 0)
-		results = append(results, buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", plans, switches, 0))
+		segs, sws := buildFixedRolling(switchDateExpiry, 12, 0)
+		results = append(results, buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segs, sws, 0))
 	}
 
 	// ── 3. SWITCH_AT_EXPIRY_6M ────────────────────────────────────────────────
 	{
-		plans, switches := buildRollingStrategy(firstFreeIdx, 6, false, 0)
-		results = append(results, buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", plans, switches, 0))
+		segs, sws := buildFixedRolling(switchDateExpiry, 6, 0)
+		results = append(results, buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segs, sws, 0))
 	}
 
 	// ── 4. SWITCH_AT_EXPIRY_3M ────────────────────────────────────────────────
 	{
-		plans, switches := buildRollingStrategy(firstFreeIdx, 3, false, 0)
-		results = append(results, buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", plans, switches, 0))
+		segs, sws := buildFixedRolling(switchDateExpiry, 3, 0)
+		results = append(results, buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segs, sws, 0))
 	}
 
 	// ── 5. SWITCH_NOW_12M ─────────────────────────────────────────────────────
 	{
-		plans, switches := buildRollingStrategy(0, 12, false, etfOnSwitchNow)
-		results = append(results, buildResult("switch_now_12m", "Switch now — 12-month fixed", plans, switches, etfOnSwitchNow))
+		segs, sws := buildFixedRolling(switchDateNow, 12, etfOnSwitchNow)
+		results = append(results, buildResult("switch_now_12m", "Switch now — 12-month fixed", segs, sws, etfOnSwitchNow))
 	}
 
 	// ── 6. SWITCH_NOW_3M ──────────────────────────────────────────────────────
 	{
-		plans, switches := buildRollingStrategy(0, 3, false, etfOnSwitchNow)
-		results = append(results, buildResult("switch_now_3m", "Switch now — 3-month rolling", plans, switches, etfOnSwitchNow))
+		segs, sws := buildFixedRolling(switchDateNow, 3, etfOnSwitchNow)
+		results = append(results, buildResult("switch_now_3m", "Switch now — 3-month rolling", segs, sws, etfOnSwitchNow))
 	}
 
-	// ── 7. OPTIMAL_GREEDY ────────────────────────────────────────────────────
+	// ── 7. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
+	// At each decision point (starting from expiry), pick the term that minimises
+	// projected cost-per-month for the remaining window.
 	{
-		var plans [12]activePlan
+		var segs []planSegment
 		var switches []SwitchEvent
 
-		for i := 0; i < firstFreeIdx && i < 12; i++ {
-			plans[i] = currentAP
+		// Current plan from window start to switchDateExpiry.
+		if switchDateExpiry.After(windowStart) {
+			segs = append(segs, planSegment{start: windowStart, end: switchDateExpiry, ap: currentAP})
 		}
 
 		type termOption struct {
-			term  int
-			isVar bool
+			termMonths int
+			isVar      bool
 		}
 		options := []termOption{
-			{0, true}, // variable (1-month rolling)
+			{1, true},
 			{3, false},
 			{6, false},
 			{12, false},
 		}
 
-		dpIdx := firstFreeIdx
-		for dpIdx < 12 {
-			dp := months[dpIdx]
-			remaining := 12 - dpIdx
-
+		dpDate := switchDateExpiry
+		if dpDate.Before(windowStart) {
+			dpDate = windowStart
+		}
+		for dpDate.Before(windowEnd) {
 			bestCPM := math.MaxFloat64
 			var bestPR *planResult
-			bestTermLen := 1
+			bestTerm := 1
 
 			for _, opt := range options {
 				var pr *planResult
 				if opt.isVar {
-					pr = getVar(dp)
+					pr = getVar(dpDate)
 				} else {
-					pr = getFixed(opt.term, dp)
+					pr = getFixed(opt.termMonths, dpDate)
 				}
 				if pr == nil {
 					continue
 				}
-
-				termLen := opt.term
-				if opt.isVar {
-					termLen = 1
+				termLen := opt.termMonths
+				endDate := dpDate.AddDate(0, termLen, 0)
+				cost, covered := costForDateRange(pr.ap, dpDate, endDate)
+				if covered <= 0 {
+					continue
 				}
-				endIdx := min(dpIdx+termLen, 12)
-				cpm := perMonthCost(pr.ap, dpIdx, endIdx)
+				cpm := cost / covered
 				if cpm < bestCPM {
 					bestCPM = cpm
 					bestPR = pr
-					bestTermLen = termLen
+					bestTerm = termLen
 				}
 			}
 
 			if bestPR == nil {
-				// No plan found; fill remaining with current plan
-				for i := dpIdx; i < 12; i++ {
-					plans[i] = currentAP
-				}
 				break
 			}
-
-			_ = remaining
-			endIdx := min(dpIdx+bestTermLen, 12)
+			nextDate := dpDate.AddDate(0, bestTerm, 0)
+			segEnd := nextDate
+			if segEnd.After(windowEnd) {
+				segEnd = windowEnd
+			}
+			segs = append(segs, planSegment{start: dpDate, end: segEnd, ap: bestPR.ap})
 			switches = append(switches, SwitchEvent{
-				EffectiveMonth: monthLabel(dp),
+				EffectiveMonth: monthLabel(dpDate),
 				ETFPaid:        0,
 				Plan:           bestPR.info,
 			})
-			for i := dpIdx; i < endIdx; i++ {
-				plans[i] = bestPR.ap
-			}
-			dpIdx = endIdx
+			dpDate = nextDate
 		}
-
-		results = append(results, buildResult("optimal_greedy", "Optimal — greedy at each decision point", plans, switches, 0))
+		results = append(results, buildResult("optimal_greedy", "Optimal — greedy at each decision point", segs, switches, 0))
 	}
 
-	// Compute savings vs baseline for all strategies
+	// Savings vs baseline
 	baselineCost := results[0].TotalCost
 	for i := range results {
 		savings := round2(baselineCost - results[i].TotalCost)
