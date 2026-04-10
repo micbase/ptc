@@ -477,7 +477,8 @@ function sortIcon(key: keyof StrategyResult): string {
           <table class="w-full text-sm">
             <thead>
               <tr class="bg-gray-50 text-gray-600 text-xs uppercase">
-                <th class="text-left px-3 py-2 font-medium">Month</th>
+                <th class="text-left px-3 py-2 font-medium">Period</th>
+                <th class="text-left px-3 py-2 font-medium">Date Range</th>
                 <th class="text-right px-3 py-2 font-medium">Usage (kWh)</th>
                 <th class="text-left px-3 py-2 font-medium">Plan</th>
                 <th class="text-right px-3 py-2 font-medium">Rate (¢)</th>
@@ -493,6 +494,7 @@ function sortIcon(key: keyof StrategyResult): string {
                 class="border-t border-gray-100"
               >
                 <td class="px-3 py-2 font-mono text-gray-700">{{ mb.month }}</td>
+                <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ mb.period_start }} – {{ mb.period_end }}</td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">
                   {{ mb.usage_kwh.toFixed(0) }}
                   <span v-if="mb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
