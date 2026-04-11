@@ -351,13 +351,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		}
 	}
 
-	currentActivePlan := ratePlan{
-		label:     "Current plan",
-		rateCents: req.CurrentRateCents,
-		baseFee:   req.CurrentBaseFee,
-		isActual:  true, // user-provided rates are real, not projected
-	}
-
 	// ── buildBreakdown ────────────────────────────────────────────────────────
 	// For each T+x period, find which segment covers it and compute cost.
 	// All segment boundaries align with period boundaries so each period is
@@ -427,60 +420,40 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	}
 
 	// ── buildFixedRolling ─────────────────────────────────────────────────────
-	// Builds date-based plan segments for a rolling fixed-term strategy.
-	// switchDate is when the first new plan starts (may be before windowStart for "switch now"
-	// strategies). Plans are selected at the actual decision date so live rates are used when
-	// the decision is today. Segments are clamped to [windowStart, windowEnd] so only the
-	// projection window appears in the breakdown.
-	buildFixedRolling := func(switchDate time.Time, termMonths int, initialETF float64) ([]planSegment, []SwitchEvent) {
+	// Builds plan segments for a rolling fixed-term strategy starting at T = windowStart.
+	// firstDecisionDate: the date used to select the first plan's rates.
+	//   - "at expiry" strategies pass windowStart (use projected/historical rates).
+	//   - "switch now" strategies pass today (lock in today's live rates for T).
+	// Subsequent terms always select rates at their own decision date.
+	buildFixedRolling := func(termMonths int, initialETF float64, firstDecisionDate time.Time) ([]planSegment, []SwitchEvent) {
 		var segments []planSegment
 		var switches []SwitchEvent
-
-		// Pre-switch: current plan from window start to the switch date.
-		if switchDate.After(windowStart) {
-			end := switchDate
-			if end.After(windowEnd) {
-				end = windowEnd
+		isFirst := true
+		for decisionDate := windowStart; decisionDate.Before(windowEnd); decisionDate = decisionDate.AddDate(0, termMonths, 0) {
+			selectDate := decisionDate
+			etf := 0.0
+			if isFirst {
+				selectDate = firstDecisionDate
+				etf = initialETF
+				isFirst = false
 			}
-			segments = append(segments, planSegment{start: windowStart, end: end, plan: currentActivePlan})
-		}
-
-		first := true
-		for decisionDate := switchDate; decisionDate.Before(windowEnd); {
-			planRes := selectBestPlan(termMonths, decisionDate)
+			planRes := selectBestPlan(termMonths, selectDate)
 			if planRes == nil {
-				planRes = selectBestPlan(1, decisionDate)
+				planRes = selectBestPlan(1, selectDate)
 			}
 			if planRes == nil {
 				break
 			}
-			nextDate := decisionDate.AddDate(0, termMonths, 0)
-
-			// Clamp segment to the projection window; skip terms that end before it starts.
-			segStart := decisionDate
-			if segStart.Before(windowStart) {
-				segStart = windowStart
-			}
-			segEnd := nextDate
+			segEnd := decisionDate.AddDate(0, termMonths, 0)
 			if segEnd.After(windowEnd) {
 				segEnd = windowEnd
 			}
-
-			if segStart.Before(segEnd) {
-				etf := 0.0
-				if first {
-					etf = initialETF
-				}
-				first = false
-				segments = append(segments, planSegment{start: segStart, end: segEnd, plan: planRes.plan})
-				switches = append(switches, SwitchEvent{
-					EffectivePeriod: dateToPeriod(segStart),
-					ETFPaid:         etf,
-					Plan:            planRes.info,
-				})
-			}
-
-			decisionDate = nextDate
+			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: planRes.plan})
+			switches = append(switches, SwitchEvent{
+				EffectivePeriod: dateToPeriod(decisionDate),
+				ETFPaid:         etf,
+				Plan:            planRes.info,
+			})
 		}
 		return segments, switches
 	}
@@ -518,31 +491,32 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 
 	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
 	{
-		segments, switches := buildFixedRolling(windowStart, 12, 0)
+		segments, switches := buildFixedRolling(12, 0, windowStart)
 		results = append(results, buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segments, switches, 0))
 	}
 
 	// ── 3. SWITCH_AT_EXPIRY_6M ────────────────────────────────────────────────
 	{
-		segments, switches := buildFixedRolling(windowStart, 6, 0)
+		segments, switches := buildFixedRolling(6, 0, windowStart)
 		results = append(results, buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segments, switches, 0))
 	}
 
 	// ── 4. SWITCH_AT_EXPIRY_3M ────────────────────────────────────────────────
 	{
-		segments, switches := buildFixedRolling(windowStart, 3, 0)
+		segments, switches := buildFixedRolling(3, 0, windowStart)
 		results = append(results, buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segments, switches, 0))
 	}
 
 	// ── 5. SWITCH_NOW_12M ─────────────────────────────────────────────────────
+	// firstDecisionDate=today: lock in today's live rates for the plan starting at T.
 	{
-		segments, switches := buildFixedRolling(today, 12, etfOnSwitchNow)
+		segments, switches := buildFixedRolling(12, etfOnSwitchNow, today)
 		results = append(results, buildResult("switch_now_12m", "Switch now — 12-month fixed", segments, switches, etfOnSwitchNow))
 	}
 
 	// ── 6. SWITCH_NOW_3M ──────────────────────────────────────────────────────
 	{
-		segments, switches := buildFixedRolling(today, 3, etfOnSwitchNow)
+		segments, switches := buildFixedRolling(3, etfOnSwitchNow, today)
 		results = append(results, buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
