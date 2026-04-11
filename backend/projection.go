@@ -167,9 +167,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// of the first decision date (windowStart). Further out they are never needed.
 	var todayPlans []LinearPlan
 	if !today.Before(windowStart.AddDate(0, 0, -30)) {
-		todayPlans, err = queryLinearPlans(ctx, pool, today)
+		todayPlans, err = queryTodayPlans(ctx, pool, today)
 		if err != nil {
-			return nil, fmt.Errorf("queryLinearPlans: %w", err)
+			return nil, fmt.Errorf("queryTodayPlans: %w", err)
 		}
 	}
 	usageMap, estimatedMap, err := queryPeriodUsage(ctx, pool, histPeriodStarts)
