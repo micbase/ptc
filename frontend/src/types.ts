@@ -75,6 +75,7 @@ export interface PeriodBreakdown {
   base_fee: number
   period_cost: number
   confidence: string
+  is_projected: boolean  // true when rates are a historical estimate, not today's live rates
 }
 
 export interface StrategyResult {
