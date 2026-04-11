@@ -289,8 +289,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		}
 
 		// Phase 1: find the best live plan (only within the enrollment window).
-		var best *LinearPlan
 		bestCost := math.MaxFloat64
+		var bestFee, bestRate float64
+		var label string
+		var info ProjectionPlanInfo
 		isActual := false
 		if !today.Before(decisionDate.AddDate(0, 0, -30)) {
 			for i := range todayPlans {
@@ -301,18 +303,40 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
 				if cost < bestCost {
 					bestCost = cost
-					best = plan
+					bestFee, bestRate = plan.BaseFee, plan.PerKwhRate
+					if termMonths == 1 {
+						label = fmt.Sprintf("%s – %s (Variable)", plan.RepCompany, plan.Product)
+					} else {
+						label = fmt.Sprintf("%s – %s (%dm Fixed)", plan.RepCompany, plan.Product, termMonths)
+					}
+					info = ProjectionPlanInfo{
+						IDKey: plan.IDKey, RepCompany: plan.RepCompany, Product: plan.Product,
+						TermValue: plan.TermValue, RateType: plan.RateType,
+						ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
+						Renewable: plan.Renewable, Rating: plan.Rating, EnrollURL: plan.EnrollURL,
+					}
 					isActual = true
 				}
 			}
 		}
 
 		// Phase 2: historical plans — always runs, overrides if cheaper.
-		var bestFee, bestRate float64
 		if histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage); histErr == nil {
 			if histCost := float64(numTermPeriods)*histFee + termUsage*histRate/100.0; histCost < bestCost {
-				best, bestCost, isActual = nil, histCost, false
+				bestCost = histCost
 				bestFee, bestRate = histFee, histRate
+				rateType := "Fixed"
+				if termMonths == 1 {
+					rateType = "Variable"
+					label = "Best variable plan (projected)"
+				} else {
+					label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
+				}
+				info = ProjectionPlanInfo{
+					TermValue: termMonths, RateType: rateType,
+					ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
+				}
+				isActual = false
 			}
 		}
 
@@ -320,38 +344,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			return nil
 		}
 
-		// Phase 3: construct result from the winning source.
-		var label string
-		if isActual {
-			bestFee, bestRate = best.BaseFee, best.PerKwhRate
-			if termMonths == 1 {
-				label = fmt.Sprintf("%s – %s (Variable)", best.RepCompany, best.Product)
-			} else {
-				label = fmt.Sprintf("%s – %s (%dm Fixed)", best.RepCompany, best.Product, termMonths)
-			}
-			return &planResult{
-				plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: true},
-				info: ProjectionPlanInfo{
-					IDKey: best.IDKey, RepCompany: best.RepCompany, Product: best.Product,
-					TermValue: best.TermValue, RateType: best.RateType,
-					ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
-					Renewable: best.Renewable, Rating: best.Rating, EnrollURL: best.EnrollURL,
-				},
-			}
-		}
-		rateType := "Fixed"
-		if termMonths == 1 {
-			rateType = "Variable"
-			label = "Best variable plan (projected)"
-		} else {
-			label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
-		}
+		// Phase 3: assemble result from winning source.
 		return &planResult{
-			plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: false},
-			info: ProjectionPlanInfo{
-				TermValue: termMonths, RateType: rateType,
-				ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
-			},
+			plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: isActual},
+			info: info,
 		}
 	}
 
