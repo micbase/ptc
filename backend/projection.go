@@ -77,17 +77,14 @@ type StrategyResult struct {
 }
 
 // planSegment is a half-open interval [start, end) covered by a single plan.
-// If isVar is true the plan field is ignored and the variable rate is re-projected
-// to the specific period at breakdown time.
 type planSegment struct {
-	start  time.Time
-	end    time.Time
-	plan   activePlan
-	isVar  bool
+	start time.Time
+	end   time.Time
+	plan  ratePlan
 }
 
-// activePlan holds the effective rates for a plan within a segment.
-type activePlan struct {
+// ratePlan holds the effective rates for a plan within a segment.
+type ratePlan struct {
 	label     string
 	rateCents float64
 	baseFee   float64
@@ -127,7 +124,7 @@ func lowestConfidence(a, b string) string {
 
 
 type planResult struct {
-	plan activePlan
+	plan ratePlan
 	info ProjectionPlanInfo
 }
 
@@ -229,12 +226,12 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return periodLabel(numPeriods)
 	}
 
-	// bestHistoricalActivePlan finds the cheapest decomposed plan from last year's
+	// bestHistoricalPlan finds the cheapest decomposed plan from last year's
 	// same calendar month at the given usage, returning it as projected rates.
 	// totalUsage is the sum of kWh across all periods the plan will cover;
 	// numCoveredPeriods is the number of those periods (for the fixed base fee).
 	// Falls back to (fallbackBaseFee, fallbackRateCents) if no historical data exists.
-	bestHistoricalActivePlan := func(
+	bestHistoricalPlan := func(
 		decisionDate time.Time,
 		historicalPlans map[string][]decomposedRate,
 		numCoveredPeriods int, totalUsage float64,
@@ -257,9 +254,8 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return baseFee, rateCents
 	}
 
-	// selectBestPlan finds the cheapest plan for decisionDate.
-	// If isVar is true, selects a variable plan (termMonths is treated as 1).
-	// If isVar is false, selects the best fixed plan for termMonths.
+	// selectBestPlan finds the cheapest plan for decisionDate with the given term.
+	// termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 	//
 	// Selection always uses today's live linearPlans for comparison.
 	// Rate projection depends on when the plan would start:
@@ -267,10 +263,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	//     directly (isActual=true, solid line on chart).
 	//   - decision date > today+30 days: rates are projected from last year's same-month
 	//     historical plans (isActual=false, dashed line on chart).
-	selectBestPlan := func(isVar bool, termMonths int, decisionDate time.Time) *planResult {
-		if isVar {
-			termMonths = 1
-		}
+	selectBestPlan := func(termMonths int, decisionDate time.Time) *planResult {
 		termEnd := decisionDate.AddDate(0, termMonths, 0)
 
 		// Compute total usage and period count for the term once (independent of plan).
@@ -287,11 +280,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			numTermPeriods = termMonths
 		}
 
-		var bestPlan *LinearPlan
+		var bestCurrentPlan *LinearPlan
 		bestCost := math.MaxFloat64
 		for i := range linearPlans {
 			plan := &linearPlans[i]
-			if isVar {
+			if termMonths == 1 {
 				if plan.RateType != "Variable" {
 					continue
 				}
@@ -303,10 +296,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
 			if cost < bestCost {
 				bestCost = cost
-				bestPlan = plan
+				bestCurrentPlan = plan
 			}
 		}
-		if bestPlan == nil {
+		if bestCurrentPlan == nil {
 			return nil
 		}
 
@@ -315,43 +308,43 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		useActual := !decisionDate.After(today.AddDate(0, 0, 30))
 		var projBaseFee, projRateCents float64
 		if useActual {
-			projBaseFee, projRateCents = bestPlan.BaseFee, bestPlan.PerKwhRate
+			projBaseFee, projRateCents = bestCurrentPlan.BaseFee, bestCurrentPlan.PerKwhRate
 		} else {
 			historicalPlans := fixedHistoricalPlans
-			if isVar {
+			if bestCurrentPlan.RateType == "Variable" {
 				historicalPlans = varHistoricalPlans
 			}
-			projBaseFee, projRateCents = bestHistoricalActivePlan(
+			projBaseFee, projRateCents = bestHistoricalPlan(
 				decisionDate, historicalPlans,
 				numTermPeriods, termUsage,
-				bestPlan.BaseFee, bestPlan.PerKwhRate,
+				bestCurrentPlan.BaseFee, bestCurrentPlan.PerKwhRate,
 			)
 		}
 
 		var label string
-		if isVar {
-			label = fmt.Sprintf("%s – %s (Variable)", bestPlan.RepCompany, bestPlan.Product)
+		if bestCurrentPlan.RateType == "Variable" {
+			label = fmt.Sprintf("%s – %s (Variable)", bestCurrentPlan.RepCompany, bestCurrentPlan.Product)
 		} else {
-			label = fmt.Sprintf("%s – %s (%dm Fixed)", bestPlan.RepCompany, bestPlan.Product, termMonths)
+			label = fmt.Sprintf("%s – %s (%dm Fixed)", bestCurrentPlan.RepCompany, bestCurrentPlan.Product, termMonths)
 		}
 
 		return &planResult{
-			plan: activePlan{
+			plan: ratePlan{
 				label:     label,
 				rateCents: projRateCents,
 				baseFee:   projBaseFee,
 				isActual:  useActual,
 			},
 			info: ProjectionPlanInfo{
-				IDKey: bestPlan.IDKey, RepCompany: bestPlan.RepCompany, Product: bestPlan.Product,
-				TermValue: bestPlan.TermValue, RateType: bestPlan.RateType,
+				IDKey: bestCurrentPlan.IDKey, RepCompany: bestCurrentPlan.RepCompany, Product: bestCurrentPlan.Product,
+				TermValue: bestCurrentPlan.TermValue, RateType: bestCurrentPlan.RateType,
 				ProjectedRateCents: projRateCents, ProjectedBaseFee: projBaseFee,
-				Renewable: bestPlan.Renewable, Rating: bestPlan.Rating, EnrollURL: bestPlan.EnrollURL,
+				Renewable: bestCurrentPlan.Renewable, Rating: bestCurrentPlan.Rating, EnrollURL: bestCurrentPlan.EnrollURL,
 			},
 		}
 	}
 
-	currentActivePlan := activePlan{
+	currentActivePlan := ratePlan{
 		label:     "Current plan",
 		rateCents: req.CurrentRateCents,
 		baseFee:   req.CurrentBaseFee,
@@ -371,17 +364,12 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			periodEnd := periodStarts[i+1]
 			usageKwh, isEstimated := usageForPeriod(i)
 
-			var segPlan activePlan
+			var segPlan ratePlan
 			for _, seg := range segments {
 				if !periodCoversSegment(periodStart, periodEnd, seg.start, seg.end) {
 					continue
 				}
 				segPlan = seg.plan
-				if seg.isVar {
-					if varResult := selectBestPlan(true, 1, periodStart); varResult != nil {
-						segPlan = varResult.plan
-					}
-				}
 				break // each period is covered by exactly one segment
 			}
 
@@ -455,9 +443,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		}
 		first := true
 		for decisionDate.Before(windowEnd) {
-			planRes := selectBestPlan(false, termMonths, decisionDate)
+			planRes := selectBestPlan(termMonths, decisionDate)
 			if planRes == nil {
-				planRes = selectBestPlan(true, 1, decisionDate)
+				planRes = selectBestPlan(1, decisionDate)
 			}
 			if planRes == nil {
 				break
@@ -483,9 +471,9 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return segments, switches
 	}
 
-	// costForDateRange sums the projected cost for the given activePlan over all
+	// costForDateRange sums the projected cost for the given ratePlan over all
 	// periods that fall within [startDate, endDate). Returns (totalCost, periodsCovered).
-	costForDateRange := func(plan activePlan, startDate, endDate time.Time) (float64, int) {
+	costForDateRange := func(plan ratePlan, startDate, endDate time.Time) (float64, int) {
 		totalCost := 0.0
 		periodsCovered := 0
 		for i := 0; i < numPeriods; i++ {
@@ -504,14 +492,17 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	var results []StrategyResult
 
 	// ── 1. BASELINE ───────────────────────────────────────────────────────────
-	// Stay on current plan until expiry; roll to variable (re-projected per period).
+	// Stay on current plan until expiry; roll to variable at expiry.
 	{
 		segments := []planSegment{}
 		if switchDateExpiry.After(windowStart) {
 			segments = append(segments, planSegment{start: windowStart, end: switchDateExpiry, plan: currentActivePlan})
 		}
 		if switchDateExpiry.Before(windowEnd) {
-			segments = append(segments, planSegment{start: switchDateExpiry, end: windowEnd, isVar: true})
+			varRes := selectBestPlan(1, switchDateExpiry)
+			if varRes != nil {
+				segments = append(segments, planSegment{start: switchDateExpiry, end: windowEnd, plan: varRes.plan})
+			}
 		}
 		results = append(results, buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", segments, nil, 0))
 	}
@@ -557,16 +548,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			segments = append(segments, planSegment{start: windowStart, end: switchDateExpiry, plan: currentActivePlan})
 		}
 
-		type termOption struct {
-			termMonths int
-			isVar      bool
-		}
-		termOptions := []termOption{
-			{1, true},
-			{3, false},
-			{6, false},
-			{12, false},
-		}
+		termOptions := []int{1, 3, 6, 12}
 
 		decisionDate := switchDateExpiry
 		if decisionDate.Before(windowStart) {
@@ -577,8 +559,8 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			var bestPlanRes *planResult
 			bestTermMonths := 1
 
-			for _, termOpt := range termOptions {
-				planRes := selectBestPlan(termOpt.isVar, termOpt.termMonths, decisionDate)
+			for _, termMonths := range termOptions {
+				planRes := selectBestPlan(termMonths, decisionDate)
 				if planRes == nil {
 					continue
 				}
@@ -595,7 +577,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				if costPerPeriod < bestCostPerPeriod {
 					bestCostPerPeriod = costPerPeriod
 					bestPlanRes = planRes
-					bestTermMonths = termOpt.termMonths
+					bestTermMonths = termMonths
 				}
 			}
 
