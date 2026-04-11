@@ -97,9 +97,9 @@ func queryLatestDate(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	return d.Format("2006-01-02"), nil
 }
 
-// queryLinearPlans returns all ONCOR plans for today that pass the 3-point linearity check,
+// queryTodayPlans returns all ONCOR plans for today that pass the 3-point linearity check,
 // with decomposed base_fee ($) and per_kwh_rate (¢/kWh).
-func queryLinearPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) ([]LinearPlan, error) {
+func queryTodayPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) ([]LinearPlan, error) {
 	query := `
 		SELECT
 			COALESCE(id_key, ''),
@@ -246,7 +246,7 @@ type decomposedRate struct {
 
 // queryHistoricalDecomposedPlans returns all linearly-decomposed plans for every
 // fetch_date, keyed by "YYYY-MM-DD". All plan types (fixed and variable) are
-// included. Applies the same 3-point linearity check as queryLinearPlans.
+// included. Applies the same 3-point linearity check as queryTodayPlans.
 func queryHistoricalDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]decomposedRate, error) {
 	query := `
 		SELECT fetch_date::text, kwh500::float8, kwh1000::float8, kwh2000::float8
