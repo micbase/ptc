@@ -425,60 +425,36 @@ func (pc *projectionContext) costForDateRange(plan ratePlan, startDate, endDate 
 	return totalCost, periodsCovered
 }
 
-func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategyResult, error) {
-	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
-	if err != nil {
-		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
-	}
-	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
-
-	// T = start of the projection window:
-	//   - expiry date if it's in the future
-	//   - today if contract has already expired
-	// The window then runs T, T+1m, T+2m, … T+12m (12 T+x periods).
-	windowStart := expiry
-	if expiry.Before(today) {
-		windowStart = today
-	}
-
+// newProjectionContext builds a projectionContext anchored at the given windowStart.
+// todayPlans and historicalPlans are pre-fetched and shared across contexts.
+func newProjectionContext(
+	ctx context.Context,
+	pool *pgxpool.Pool,
+	today time.Time,
+	windowStart time.Time,
+	todayPlans []LinearPlan,
+	historicalPlans map[string][]decomposedRate,
+) (*projectionContext, error) {
 	const numPeriods = 12
 
-	// periodStarts[i] = T + i months; periodStarts[12] = T + 12m = windowEnd
+	// periodStarts[i] = windowStart + i months; periodStarts[12] = windowEnd
 	periodStarts := make([]time.Time, numPeriods+1)
 	for i := 0; i <= numPeriods; i++ {
 		periodStarts[i] = windowStart.AddDate(0, i, 0)
 	}
 	windowEnd := periodStarts[numPeriods]
 
-	// Historical period starts for usage lookup (same T+i periods, 1 year back).
+	// Historical period starts for usage lookup: same T+i offsets, 1 year back.
 	histPeriodStarts := make([]time.Time, numPeriods)
 	for i := 0; i < numPeriods; i++ {
 		histPeriodStarts[i] = windowStart.AddDate(-1, i, 0)
 	}
 
-	// Always fetch today's live plans: needed for "switch now" strategies regardless
-	// of how far windowStart is in the future.
-	todayPlans, err := queryTodayPlans(ctx, pool, today)
-	if err != nil {
-		return nil, fmt.Errorf("queryTodayPlans: %w", err)
-	}
 	usageMap, estimatedMap, err := queryPeriodUsage(ctx, pool, histPeriodStarts)
 	if err != nil {
 		return nil, fmt.Errorf("queryPeriodUsage: %w", err)
 	}
-	historicalPlans, err := queryHistoricalDecomposedPlans(ctx, pool)
-	if err != nil {
-		return nil, fmt.Errorf("queryHistoricalDecomposedPlans: %w", err)
-	}
 
-	// ETF applies if switching today is before (expiry − 14 days).
-	etfCutoff := expiry.AddDate(0, 0, -14)
-	etfOnSwitchNow := 0.0
-	if today.Before(etfCutoff) {
-		etfOnSwitchNow = req.ETFAmount
-	}
-
-	// Average usage fallback across periods with known history.
 	totalUsage, usageCount := 0.0, 0
 	for i := 0; i < numPeriods; i++ {
 		if u, ok := usageMap[i]; ok && u > 0 {
@@ -491,7 +467,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		avgUsage = totalUsage / float64(usageCount)
 	}
 
-	pc := &projectionContext{
+	return &projectionContext{
 		today:           today,
 		todayPlans:      todayPlans,
 		historicalPlans: historicalPlans,
@@ -502,69 +478,118 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		periodStarts:    periodStarts,
 		windowStart:     windowStart,
 		windowEnd:       windowEnd,
+	}, nil
+}
+
+func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategyResult, error) {
+	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
+	if err != nil {
+		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
+	}
+	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
+
+	// windowStartExpiry is used by "at expiry" strategies:
+	//   - expiry date if it's in the future
+	//   - today if contract has already expired
+	windowStartExpiry := expiry
+	if expiry.Before(today) {
+		windowStartExpiry = today
+	}
+
+	// windowStartNow is used by "switch now" strategies: the window begins today.
+	windowStartNow := today
+
+	// Always fetch today's live plans: needed for "switch now" strategies regardless
+	// of how far expiry is in the future.
+	todayPlans, err := queryTodayPlans(ctx, pool, today)
+	if err != nil {
+		return nil, fmt.Errorf("queryTodayPlans: %w", err)
+	}
+	historicalPlans, err := queryHistoricalDecomposedPlans(ctx, pool)
+	if err != nil {
+		return nil, fmt.Errorf("queryHistoricalDecomposedPlans: %w", err)
+	}
+
+	// Build one context per window-start: period boundaries, usage lookups, and
+	// average-usage fallbacks all depend on where the window begins.
+	pcExpiry, err := newProjectionContext(ctx, pool, today, windowStartExpiry, todayPlans, historicalPlans)
+	if err != nil {
+		return nil, err
+	}
+	pcNow, err := newProjectionContext(ctx, pool, today, windowStartNow, todayPlans, historicalPlans)
+	if err != nil {
+		return nil, err
+	}
+
+	// ETF applies if switching today is before (expiry − 14 days).
+	etfCutoff := expiry.AddDate(0, 0, -14)
+	etfOnSwitchNow := 0.0
+	if today.Before(etfCutoff) {
+		etfOnSwitchNow = req.ETFAmount
 	}
 
 	var results []StrategyResult
 
 	// ── 1. BASELINE ───────────────────────────────────────────────────────────
-	// Roll to variable at windowStart (= max(expiry, today)).
+	// Roll to variable at windowStartExpiry (= max(expiry, today)).
 	{
-		varRes := pc.selectBestPlan(1, windowStart)
+		varRes := pcExpiry.selectBestPlan(1, windowStartExpiry)
 		var segments []planSegment
 		if varRes != nil {
-			segments = []planSegment{{start: windowStart, end: windowEnd, plan: varRes.plan}}
+			segments = []planSegment{{start: windowStartExpiry, end: pcExpiry.windowEnd, plan: varRes.plan}}
 		}
-		results = append(results, pc.buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", segments, nil, 0))
+		results = append(results, pcExpiry.buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", segments, nil, 0))
 	}
 
 	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
 	{
-		segments, switches := pc.buildFixedRolling(12, 0, windowStart)
-		results = append(results, pc.buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segments, switches, 0))
+		segments, switches := pcExpiry.buildFixedRolling(12, 0, windowStartExpiry)
+		results = append(results, pcExpiry.buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segments, switches, 0))
 	}
 
 	// ── 3. SWITCH_AT_EXPIRY_6M ────────────────────────────────────────────────
 	{
-		segments, switches := pc.buildFixedRolling(6, 0, windowStart)
-		results = append(results, pc.buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segments, switches, 0))
+		segments, switches := pcExpiry.buildFixedRolling(6, 0, windowStartExpiry)
+		results = append(results, pcExpiry.buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segments, switches, 0))
 	}
 
 	// ── 4. SWITCH_AT_EXPIRY_3M ────────────────────────────────────────────────
 	{
-		segments, switches := pc.buildFixedRolling(3, 0, windowStart)
-		results = append(results, pc.buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segments, switches, 0))
+		segments, switches := pcExpiry.buildFixedRolling(3, 0, windowStartExpiry)
+		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segments, switches, 0))
 	}
 
 	// ── 5. SWITCH_NOW_12M ─────────────────────────────────────────────────────
-	// firstDecisionDate=today: lock in today's live rates for the plan starting at T.
+	// Window starts today; period boundaries and usage are anchored to today.
+	// firstDecisionDate == windowStart == today, so today's live rates cover T+1.
 	{
-		segments, switches := pc.buildFixedRolling(12, etfOnSwitchNow, today)
-		results = append(results, pc.buildResult("switch_now_12m", "Switch now — 12-month fixed", segments, switches, etfOnSwitchNow))
+		segments, switches := pcNow.buildFixedRolling(12, etfOnSwitchNow, today)
+		results = append(results, pcNow.buildResult("switch_now_12m", "Switch now — 12-month fixed", segments, switches, etfOnSwitchNow))
 	}
 
 	// ── 6. SWITCH_NOW_3M ──────────────────────────────────────────────────────
 	{
-		segments, switches := pc.buildFixedRolling(3, etfOnSwitchNow, today)
-		results = append(results, pc.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
+		segments, switches := pcNow.buildFixedRolling(3, etfOnSwitchNow, today)
+		results = append(results, pcNow.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
 	// ── 7. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
-	// At each decision point (starting from windowStart), pick the term that
-	// minimises projected cost-per-period for the remaining window.
+	// At each decision point (starting from windowStartExpiry), pick the term
+	// that minimises projected cost-per-period for the remaining window.
 	{
 		var segments []planSegment
 		var switches []SwitchEvent
 
 		termOptions := []int{1, 3, 6, 12}
 
-		decisionDate := windowStart
-		for decisionDate.Before(windowEnd) {
+		decisionDate := windowStartExpiry
+		for decisionDate.Before(pcExpiry.windowEnd) {
 			bestCostPerPeriod := math.MaxFloat64
 			var bestPlanRes *planResult
 			bestTermMonths := 1
 
 			for _, termMonths := range termOptions {
-				planRes := pc.selectBestPlan(termMonths, decisionDate)
+				planRes := pcExpiry.selectBestPlan(termMonths, decisionDate)
 				if planRes == nil {
 					continue
 				}
@@ -573,7 +598,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				// term's own duration biases the comparison toward shorter
 				// terms: a 1-month variable plan only needs to beat a
 				// 12-month average to win, letting it dominate every period.
-				totalCost, periodsCovered := pc.costForDateRange(planRes.plan, decisionDate, windowEnd)
+				totalCost, periodsCovered := pcExpiry.costForDateRange(planRes.plan, decisionDate, pcExpiry.windowEnd)
 				if periodsCovered <= 0 {
 					continue
 				}
@@ -590,18 +615,18 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 			nextDate := decisionDate.AddDate(0, bestTermMonths, 0)
 			segEnd := nextDate
-			if segEnd.After(windowEnd) {
-				segEnd = windowEnd
+			if segEnd.After(pcExpiry.windowEnd) {
+				segEnd = pcExpiry.windowEnd
 			}
 			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: bestPlanRes.plan})
 			switches = append(switches, SwitchEvent{
-				EffectivePeriod: pc.dateToPeriod(decisionDate),
+				EffectivePeriod: pcExpiry.dateToPeriod(decisionDate),
 				ETFPaid:         0,
 				Plan:            bestPlanRes.info,
 			})
 			decisionDate = nextDate
 		}
-		results = append(results, pc.buildResult("optimal_greedy", "Optimal — greedy at each decision point", segments, switches, 0))
+		results = append(results, pcExpiry.buildResult("optimal_greedy", "Optimal — greedy at each decision point", segments, switches, 0))
 	}
 
 	// Savings vs baseline
