@@ -317,6 +317,30 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			if best == nil {
 				return nil
 			}
+
+			// If historical rates are cheaper, treat it as a projection with no plan identity.
+			if histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage); histErr == nil {
+				histCost := float64(numTermPeriods)*histFee + termUsage*histRate/100.0
+				if histCost < bestCost {
+					fee, rate, isActual = histFee, histRate, false
+					rateType := "Fixed"
+					if termMonths == 1 {
+						rateType = "Variable"
+						label = "Best variable plan (projected)"
+					} else {
+						label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
+					}
+					info = ProjectionPlanInfo{
+						TermValue: termMonths, RateType: rateType,
+						ProjectedRateCents: rate, ProjectedBaseFee: fee,
+					}
+					return &planResult{
+						plan: ratePlan{label: label, rateCents: rate, baseFee: fee, isActual: isActual},
+						info: info,
+					}
+				}
+			}
+
 			fee, rate, isActual = best.BaseFee, best.PerKwhRate, true
 			if termMonths == 1 {
 				label = fmt.Sprintf("%s – %s (Variable)", best.RepCompany, best.Product)
