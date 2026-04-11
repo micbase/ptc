@@ -62,9 +62,9 @@ function switchEtfForPeriod(strategy: StrategyResult, period: string): number {
   return sw?.etf_paid ?? 0
 }
 
-function isVariablePeriod(strategy: StrategyResult, period: string): boolean {
-  const mb = strategy.period_breakdown.find((m) => m.period === period)
-  return mb?.active_plan_label.includes('Variable') ?? false
+function isProjectedPeriod(strategy: StrategyResult, period: string): boolean {
+  const pb = strategy.period_breakdown.find((m) => m.period === period)
+  return pb?.is_projected ?? false
 }
 
 // ── Filtered strategies for charts ───────────────────────────────────────────
@@ -103,12 +103,9 @@ const periodCostData = computed<ChartData<'line'>>(() => {
         return 'circle' as const
       }),
       segment: {
-        borderDash: (ctx: any) => (isVariablePeriod(s, labels[ctx.p0DataIndex]) ? [6, 3] : []),
-        borderColor: (ctx: any) => {
-          const idx = ctx.p0DataIndex
-          const isLowConf = idx >= 6
-          return hexToRgba(color, isLowConf && isVariablePeriod(s, labels[idx]) ? 0.45 : 1)
-        },
+        borderDash: (ctx: any) => (isProjectedPeriod(s, labels[ctx.p0DataIndex]) ? [6, 3] : []),
+        borderColor: (ctx: any) =>
+          hexToRgba(color, isProjectedPeriod(s, labels[ctx.p0DataIndex]) ? 0.5 : 1),
       },
     }
   })
@@ -365,7 +362,7 @@ function sortIcon(key: keyof StrategyResult): string {
           <Line :data="periodCostData" :options="periodCostOptions" style="height: 380px" />
         </div>
         <p class="mt-2 text-xs text-gray-400">
-          Circles on lines = switch events. ★ = ETF paid at switch. Dashed segments = variable plan months. Months 7-12 on non-fixed projections shown at reduced opacity.
+          Circles on lines = switch events. ★ = ETF paid at switch. Solid = today's live rates (can sign up now). Dashed + faded = projected from historical data.
         </p>
       </div>
 
@@ -500,7 +497,9 @@ function sortIcon(key: keyof StrategyResult): string {
                   <span v-if="pb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
                 </td>
                 <td class="px-3 py-2 text-gray-600 max-w-xs truncate">{{ pb.active_plan_label }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.rate_cents.toFixed(2) }}</td>
+                <td class="px-3 py-2 text-right tabular-nums text-gray-700">
+                  {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400 text-xs" title="Projected from historical data">~</span>
+                </td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>
                 <td class="px-3 py-2 text-center">
