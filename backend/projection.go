@@ -266,26 +266,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		return baseFee, rateCents, nil
 	}
 
-	// makeHistoricalResult builds a projected planResult from historical rates.
-	// Used both when historical beats live rates and when no live plans exist.
-	makeHistoricalResult := func(termMonths int, fee, rate float64) *planResult {
-		rateType := "Fixed"
-		var label string
-		if termMonths == 1 {
-			rateType = "Variable"
-			label = "Best variable plan (projected)"
-		} else {
-			label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
-		}
-		return &planResult{
-			plan: ratePlan{label: label, rateCents: rate, baseFee: fee, isActual: false},
-			info: ProjectionPlanInfo{
-				TermValue: termMonths, RateType: rateType,
-				ProjectedRateCents: rate, ProjectedBaseFee: fee,
-			},
-		}
-	}
-
 	// selectBestPlan finds the cheapest plan for decisionDate with the given term.
 	// termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 	//
@@ -327,31 +307,50 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			}
 		}
 
-		// Phase 2: check historical plans — always runs, overrides if cheaper.
+		// Phase 2: historical plans — always runs, overrides if cheaper.
+		var bestFee, bestRate float64
 		if histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage); histErr == nil {
 			if histCost := float64(numTermPeriods)*histFee + termUsage*histRate/100.0; histCost < bestCost {
-				return makeHistoricalResult(termMonths, histFee, histRate)
+				best, bestCost, isActual = nil, histCost, false
+				bestFee, bestRate = histFee, histRate
 			}
 		}
 
-		if best == nil {
+		if bestCost == math.MaxFloat64 {
 			return nil
 		}
 
-		// Phase 3: construct result from the winning live plan.
+		// Phase 3: construct result from the winning source.
 		var label string
+		if isActual {
+			bestFee, bestRate = best.BaseFee, best.PerKwhRate
+			if termMonths == 1 {
+				label = fmt.Sprintf("%s – %s (Variable)", best.RepCompany, best.Product)
+			} else {
+				label = fmt.Sprintf("%s – %s (%dm Fixed)", best.RepCompany, best.Product, termMonths)
+			}
+			return &planResult{
+				plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: true},
+				info: ProjectionPlanInfo{
+					IDKey: best.IDKey, RepCompany: best.RepCompany, Product: best.Product,
+					TermValue: best.TermValue, RateType: best.RateType,
+					ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
+					Renewable: best.Renewable, Rating: best.Rating, EnrollURL: best.EnrollURL,
+				},
+			}
+		}
+		rateType := "Fixed"
 		if termMonths == 1 {
-			label = fmt.Sprintf("%s – %s (Variable)", best.RepCompany, best.Product)
+			rateType = "Variable"
+			label = "Best variable plan (projected)"
 		} else {
-			label = fmt.Sprintf("%s – %s (%dm Fixed)", best.RepCompany, best.Product, termMonths)
+			label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
 		}
 		return &planResult{
-			plan: ratePlan{label: label, rateCents: best.PerKwhRate, baseFee: best.BaseFee, isActual: isActual},
+			plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: false},
 			info: ProjectionPlanInfo{
-				IDKey: best.IDKey, RepCompany: best.RepCompany, Product: best.Product,
-				TermValue: best.TermValue, RateType: best.RateType,
-				ProjectedRateCents: best.PerKwhRate, ProjectedBaseFee: best.BaseFee,
-				Renewable: best.Renewable, Rating: best.Rating, EnrollURL: best.EnrollURL,
+				TermValue: termMonths, RateType: rateType,
+				ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
 			},
 		}
 	}
