@@ -209,6 +209,35 @@ func (pc *projectionContext) bestHistoricalPlan(
 			}
 		}
 	}
+	if bestCost != math.MaxFloat64 {
+		return baseFee, rateCents, nil
+	}
+
+	// Fallback: no data in the ideal window — use the most recent available date.
+	var latestDate time.Time
+	for dateStr, candidates := range pc.historicalPlans {
+		if len(candidates) == 0 {
+			continue
+		}
+		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+		if parseErr != nil {
+			continue
+		}
+		if fetchDate.After(latestDate) {
+			latestDate = fetchDate
+		}
+	}
+	if latestDate.IsZero() {
+		return 0, 0, fmt.Errorf("no historical rate data for decision date %s", decisionDate.Format("2006-01-02"))
+	}
+	for _, r := range pc.historicalPlans[latestDate.Format("2006-01-02")] {
+		cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
+		if cost < bestCost {
+			bestCost = cost
+			baseFee = r.BaseFee
+			rateCents = r.PerKwhRate
+		}
+	}
 	if bestCost == math.MaxFloat64 {
 		return 0, 0, fmt.Errorf("no historical rate data for decision date %s", decisionDate.Format("2006-01-02"))
 	}
