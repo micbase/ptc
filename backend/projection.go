@@ -239,38 +239,22 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	) (baseFee, rateCents float64, planIsActual bool) {
 		inEnrollmentWindow := !today.Before(decisionDate.AddDate(0, 0, -30))
 
+		var histStart, histEnd time.Time
+		bestCost := math.MaxFloat64
 		if inEnrollmentWindow {
 			// Start with today's plan as the best candidate.
 			baseFee = fallbackBaseFee
 			rateCents = fallbackRateCents
 			planIsActual = true
-			bestCost := float64(numCoveredPeriods)*fallbackBaseFee + totalUsage*fallbackRateCents/100.0
-
+			bestCost = float64(numCoveredPeriods)*fallbackBaseFee + totalUsage*fallbackRateCents/100.0
 			// Check historical plans from (today+1d−1yr, decisionDate−1yr].
-			histStart := today.AddDate(-1, 0, 1)
-			histEnd := decisionDate.AddDate(-1, 0, 0)
-			for dateStr, candidates := range historicalPlans {
-				fetchDate, err := time.Parse("2006-01-02", dateStr)
-				if err != nil || fetchDate.Before(histStart) || fetchDate.After(histEnd) {
-					continue
-				}
-				for _, candidate := range candidates {
-					cost := float64(numCoveredPeriods)*candidate.BaseFee + totalUsage*candidate.PerKwhRate/100.0
-					if cost < bestCost {
-						bestCost = cost
-						baseFee = candidate.BaseFee
-						rateCents = candidate.PerKwhRate
-						planIsActual = false
-					}
-				}
-			}
-			return
+			histStart = today.AddDate(-1, 0, 1)
+			histEnd = decisionDate.AddDate(-1, 0, 0)
+		} else {
+			// Beyond enrollment window: use historical plans from [decisionDate−1yr−30d, decisionDate−1yr].
+			histStart = decisionDate.AddDate(-1, 0, -30)
+			histEnd = decisionDate.AddDate(-1, 0, 0)
 		}
-
-		// Beyond enrollment window: use historical plans from [decisionDate−1yr−30d, decisionDate−1yr].
-		histStart := decisionDate.AddDate(-1, 0, -30)
-		histEnd := decisionDate.AddDate(-1, 0, 0)
-		bestCost := math.MaxFloat64
 		for dateStr, candidates := range historicalPlans {
 			fetchDate, err := time.Parse("2006-01-02", dateStr)
 			if err != nil || fetchDate.Before(histStart) || fetchDate.After(histEnd) {
@@ -282,21 +266,25 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 					bestCost = cost
 					baseFee = candidate.BaseFee
 					rateCents = candidate.PerKwhRate
+					planIsActual = false
 				}
 			}
 		}
-		if bestCost == math.MaxFloat64 {
+		if !inEnrollmentWindow && bestCost == math.MaxFloat64 {
 			return fallbackBaseFee, fallbackRateCents, false
 		}
-		return baseFee, rateCents, false
+		return
 	}
 
 	// selectBestPlan finds the cheapest plan for decisionDate with the given term.
 	// termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 	//
-	// Today's live linearPlans determine which plan to recommend (label/ID).
-	// Rates and isActual are resolved by bestHistoricalPlan, which handles the
-	// enrollment-window check internally.
+	// Today's live linearPlans provide plan identity (label/ID/URL). They are also
+	// used for cost ranking, but only when today is within the 30-day enrollment
+	// window (today >= decisionDate−30d). Outside that window the user cannot enroll
+	// today, so today's rate ranking is meaningless; the cheapest-today plan is still
+	// used as an indicative label since historical data carries no plan identity.
+	// Rates and isActual are resolved by bestHistoricalPlan regardless.
 	selectBestPlan := func(termMonths int, decisionDate time.Time) *planResult {
 		termEnd := decisionDate.AddDate(0, termMonths, 0)
 
@@ -314,6 +302,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			numTermPeriods = termMonths
 		}
 
+		inEnrollmentWindow := !today.Before(decisionDate.AddDate(0, 0, -30))
+
+		// Rank today's plans by cost. Within the enrollment window this selects the
+		// genuinely cheapest plan to enroll in. Outside it, the ranking is a proxy
+		// used only to pick an indicative label; actual rates come from bestHistoricalPlan.
 		var bestCurrentPlan *LinearPlan
 		bestCost := math.MaxFloat64
 		for i := range linearPlans {
@@ -327,9 +320,15 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 					continue
 				}
 			}
-			cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
-			if cost < bestCost {
-				bestCost = cost
+			if inEnrollmentWindow {
+				cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
+				if cost < bestCost {
+					bestCost = cost
+					bestCurrentPlan = plan
+				}
+			} else if bestCurrentPlan == nil {
+				// Outside enrollment window: capture the first valid plan for label identity;
+				// rates will be overridden by historical data below.
 				bestCurrentPlan = plan
 			}
 		}
