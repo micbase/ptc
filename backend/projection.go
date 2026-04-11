@@ -271,8 +271,6 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	//
 	// Within the 30-day enrollment window (today >= decisionDate−30d):
 	//   - Picks the cheapest plan from todayPlans by today's live rates.
-	//   - Also checks historical rates; if cheaper, they override the rate
-	//     (isActual=false) while today's plan identity is preserved.
 	//   - Returns nil if no matching plan exists in todayPlans.
 	//
 	// Outside the enrollment window:
@@ -297,19 +295,18 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 
 		inEnrollmentWindow := !today.Before(decisionDate.AddDate(0, 0, -30))
 
+		var label string
+		var fee, rate float64
+		var isActual bool
+		var info ProjectionPlanInfo
+
 		if inEnrollmentWindow {
 			var best *LinearPlan
 			bestCost := math.MaxFloat64
 			for i := range todayPlans {
 				plan := &todayPlans[i]
-				if termMonths == 1 {
-					if plan.RateType != "Variable" {
-						continue
-					}
-				} else {
-					if plan.RateType == "Variable" || plan.TermValue != termMonths {
-						continue
-					}
+				if plan.TermValue != termMonths {
+					continue
 				}
 				cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
 				if cost < bestCost {
@@ -320,52 +317,41 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			if best == nil {
 				return nil
 			}
-
-			// Check if historical rates beat today's; if so, override rates but keep plan identity.
-			fee, rate, isActual := best.BaseFee, best.PerKwhRate, true
-			if histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage); histErr == nil {
-				histCost := float64(numTermPeriods)*histFee + termUsage*histRate/100.0
-				if histCost < bestCost {
-					fee, rate, isActual = histFee, histRate, false
-				}
-			}
-
-			var label string
+			fee, rate, isActual = best.BaseFee, best.PerKwhRate, true
 			if termMonths == 1 {
 				label = fmt.Sprintf("%s – %s (Variable)", best.RepCompany, best.Product)
 			} else {
 				label = fmt.Sprintf("%s – %s (%dm Fixed)", best.RepCompany, best.Product, termMonths)
 			}
-			return &planResult{
-				plan: ratePlan{label: label, rateCents: rate, baseFee: fee, isActual: isActual},
-				info: ProjectionPlanInfo{
-					IDKey: best.IDKey, RepCompany: best.RepCompany, Product: best.Product,
-					TermValue: best.TermValue, RateType: best.RateType,
-					ProjectedRateCents: rate, ProjectedBaseFee: fee,
-					Renewable: best.Renewable, Rating: best.Rating, EnrollURL: best.EnrollURL,
-				},
+			info = ProjectionPlanInfo{
+				IDKey: best.IDKey, RepCompany: best.RepCompany, Product: best.Product,
+				TermValue: best.TermValue, RateType: best.RateType,
+				ProjectedRateCents: rate, ProjectedBaseFee: fee,
+				Renewable: best.Renewable, Rating: best.Rating, EnrollURL: best.EnrollURL,
+			}
+		} else {
+			// Outside enrollment window: use historical rates only, no specific plan identity.
+			histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage)
+			if histErr != nil {
+				return nil
+			}
+			fee, rate, isActual = histFee, histRate, false
+			rateType := "Fixed"
+			if termMonths == 1 {
+				rateType = "Variable"
+				label = "Best variable plan (projected)"
+			} else {
+				label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
+			}
+			info = ProjectionPlanInfo{
+				TermValue: termMonths, RateType: rateType,
+				ProjectedRateCents: rate, ProjectedBaseFee: fee,
 			}
 		}
 
-		// Outside enrollment window: use historical rates only, no specific plan identity.
-		histFee, histRate, histErr := bestHistoricalPlan(decisionDate, numTermPeriods, termUsage)
-		if histErr != nil {
-			return nil
-		}
-		rateType := "Fixed"
-		var label string
-		if termMonths == 1 {
-			rateType = "Variable"
-			label = "Best variable plan (projected)"
-		} else {
-			label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
-		}
 		return &planResult{
-			plan: ratePlan{label: label, rateCents: histRate, baseFee: histFee, isActual: false},
-			info: ProjectionPlanInfo{
-				TermValue: termMonths, RateType: rateType,
-				ProjectedRateCents: histRate, ProjectedBaseFee: histFee,
-			},
+			plan: ratePlan{label: label, rateCents: rate, baseFee: fee, isActual: isActual},
+			info: info,
 		}
 	}
 
