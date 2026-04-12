@@ -402,47 +402,6 @@ func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm 
 	return segments, switches
 }
 
-// buildFixedRolling builds plan segments for a rolling fixed-term strategy starting at T = windowStart.
-// firstDecisionDate: the date used to select the first plan's rates.
-//   - "at expiry" strategies pass windowStart (use projected/historical rates).
-//   - "switch now" strategies pass today (lock in today's live rates for T).
-//
-// Subsequent terms always select rates at their own decision date.
-func (pc *projectionContext) buildFixedRolling(termMonths int, initialETF float64, firstDecisionDate time.Time) ([]planSegment, []SwitchEvent) {
-	var segments []planSegment
-	var switches []SwitchEvent
-	isFirst := true
-	for decisionDate := pc.windowStart; decisionDate.Before(pc.windowEnd); {
-		selectDate := decisionDate
-		etf := 0.0
-		if isFirst {
-			selectDate = firstDecisionDate
-			etf = initialETF
-			isFirst = false
-		}
-		actualTerm := termMonths
-		planRes := pc.selectBestPlan(termMonths, selectDate)
-		if planRes == nil {
-			planRes = pc.selectBestPlan(1, selectDate)
-			actualTerm = 1
-		}
-		if planRes == nil {
-			break
-		}
-		segEnd := decisionDate.AddDate(0, actualTerm, 0)
-		if segEnd.After(pc.windowEnd) {
-			segEnd = pc.windowEnd
-		}
-		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *planRes})
-		switches = append(switches, SwitchEvent{
-			EffectivePeriod: pc.dateToPeriod(decisionDate),
-			ETFPaid:         etf,
-			Plan:            *planRes,
-		})
-		decisionDate = decisionDate.AddDate(0, actualTerm, 0)
-	}
-	return segments, switches
-}
 
 // costForDateRange sums the projected cost for the given Plan over all
 // periods that fall within [startDate, endDate). Returns (totalCost, periodsCovered).
@@ -563,25 +522,25 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// ── 1. BASELINE ───────────────────────────────────────────────────────────
 	// From expiry, switch to the best variable (1-month) plan every month.
 	{
-		segments, switches := pcExpiry.buildFixedRolling(1, 0, windowStartExpiry)
+		segments, switches := pcExpiry.buildGreedyRolling([]int{1}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("baseline", "Baseline — best variable monthly from expiry", segments, switches, 0))
 	}
 
 	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
 	{
-		segments, switches := pcExpiry.buildFixedRolling(12, 0, windowStartExpiry)
+		segments, switches := pcExpiry.buildGreedyRolling([]int{12}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segments, switches, 0))
 	}
 
 	// ── 3. SWITCH_AT_EXPIRY_6M ────────────────────────────────────────────────
 	{
-		segments, switches := pcExpiry.buildFixedRolling(6, 0, windowStartExpiry)
+		segments, switches := pcExpiry.buildGreedyRolling([]int{6}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segments, switches, 0))
 	}
 
 	// ── 4. SWITCH_AT_EXPIRY_3M ────────────────────────────────────────────────
 	{
-		segments, switches := pcExpiry.buildFixedRolling(3, 0, windowStartExpiry)
+		segments, switches := pcExpiry.buildGreedyRolling([]int{3}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segments, switches, 0))
 	}
 
@@ -589,19 +548,19 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// Window starts today; period boundaries and usage are anchored to today.
 	// firstDecisionDate == windowStart == today, so today's live rates cover T+1.
 	{
-		segments, switches := pcNow.buildFixedRolling(12, etfOnSwitchNow, today)
+		segments, switches := pcNow.buildGreedyRolling([]int{12}, 1, etfOnSwitchNow, today)
 		results = append(results, pcNow.buildResult("switch_now_12m", "Switch now — 12-month fixed", segments, switches, etfOnSwitchNow))
 	}
 
 	// ── 6. SWITCH_NOW_3M ──────────────────────────────────────────────────────
 	{
-		segments, switches := pcNow.buildFixedRolling(3, etfOnSwitchNow, today)
+		segments, switches := pcNow.buildGreedyRolling([]int{3}, 1, etfOnSwitchNow, today)
 		results = append(results, pcNow.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
 	// ── 7. SWITCH_NOW_6M ──────────────────────────────────────────────────────
 	{
-		segments, switches := pcNow.buildFixedRolling(6, etfOnSwitchNow, today)
+		segments, switches := pcNow.buildGreedyRolling([]int{6}, 1, etfOnSwitchNow, today)
 		results = append(results, pcNow.buildResult("switch_now_6m", "Switch now — 6-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
