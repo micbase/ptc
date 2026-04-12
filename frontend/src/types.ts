@@ -97,7 +97,6 @@ export interface PeriodBreakdown {
   rate_cents: number
   base_fee: number
   period_cost: number
-  confidence: string
   is_projected: boolean  // true when rates are a historical estimate, not today's live rates
 }
 
@@ -109,7 +108,6 @@ export interface StrategyResult {
   etf_paid: number
   net_savings: number
   switch_count: number
-  confidence: string
   switches: SwitchEvent[]
   period_breakdown: PeriodBreakdown[]
 }
