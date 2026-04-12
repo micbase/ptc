@@ -1,5 +1,11 @@
 import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategyResult, SwitchRecord, AddSwitchEventRequest } from './types'
 
+export async function fetchLatestSwitchEvent(): Promise<SwitchRecord | null> {
+  const res = await fetch(`${BASE}/switch-events/latest`)
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
 const BASE = '/api'
 
 export async function fetchPlans(date: string): Promise<ElectricityRate[]> {

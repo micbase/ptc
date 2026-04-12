@@ -11,6 +11,7 @@ const props = defineProps<{
   termValue: number
   kwh1000Cents: number
   enrollUrl: string
+  cancelFee?: string
   // Pre-suggested dates (can be overridden by user)
   suggestedSwitchDate?: string
   suggestedExpirationDate?: string
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 
 const switchDate = ref('')
 const expirationDate = ref('')
+const etfText = ref('')
 const notes = ref('')
 const saving = ref(false)
 const error = ref('')
@@ -39,6 +41,7 @@ watch(() => props.show, (val) => {
     const today = new Date().toISOString().slice(0, 10)
     switchDate.value = props.suggestedSwitchDate || today
     expirationDate.value = props.suggestedExpirationDate || computeExpiration(switchDate.value)
+    etfText.value = props.cancelFee ?? ''
     notes.value = ''
     error.value = ''
   }
@@ -56,6 +59,7 @@ async function onConfirm() {
       electricity_rate_id: props.electricityRateId,
       switch_date: switchDate.value,
       contract_expiration_date: expirationDate.value,
+      etf_text: etfText.value,
       notes: notes.value,
     }
     const record = await addSwitchEvent(req)
@@ -121,6 +125,15 @@ function onSkip() {
               v-model="expirationDate"
               type="date"
               required
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Early Termination Fee (optional)</label>
+            <input
+              v-model="etfText"
+              type="text"
+              placeholder="e.g. 20, 20/remaining month"
               class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>

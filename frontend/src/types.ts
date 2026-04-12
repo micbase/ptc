@@ -40,6 +40,7 @@ export interface ChartPoint {
 
 export interface ProjectionRequest {
   etf_amount: number
+  etf_per_month_amount: number
   contract_expiration: string
 }
 
@@ -67,6 +68,7 @@ export interface SwitchRecord {
   electricity_rate_id: number
   switch_date: string
   contract_expiration_date: string
+  etf_text: string
   notes: string
   created_at: string
   // Joined from electricity_rates
@@ -83,6 +85,7 @@ export interface AddSwitchEventRequest {
   electricity_rate_id: number
   switch_date: string
   contract_expiration_date: string
+  etf_text: string
   notes: string
 }
 

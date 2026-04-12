@@ -104,6 +104,7 @@ async function onSubmitAdd() {
       electricity_rate_id: selectedPlan.value.id,
       switch_date: switchDate.value,
       contract_expiration_date: expirationDate.value,
+      etf_text: '',
       notes: addNotes.value,
     }
     await addSwitchEvent(req)

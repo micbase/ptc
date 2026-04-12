@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -181,6 +182,7 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 			se.electricity_rate_id,
 			se.switch_date::text,
 			se.contract_expiration_date::text,
+			COALESCE(se.etf_text, ''),
 			COALESCE(se.notes, ''),
 			se.created_at::text,
 			COALESCE(er.rep_company, ''),
@@ -205,7 +207,7 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 		var r SwitchRecord
 		if err := rows.Scan(
 			&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
-			&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+			&r.ETFText, &r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
 			&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
 		); err != nil {
 			return nil, err
@@ -218,10 +220,11 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEventRequest) (SwitchRecord, error) {
 	var id int
 	err := pool.QueryRow(ctx, `
-		INSERT INTO switch_events (electricity_rate_id, switch_date, contract_expiration_date, notes)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO switch_events (electricity_rate_id, switch_date, contract_expiration_date, etf_text, notes)
+		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id`,
-		req.ElectricityRateID, req.SwitchDate, req.ContractExpirationDate, req.Notes,
+		req.ElectricityRateID, req.SwitchDate, req.ContractExpirationDate,
+		nullableString(req.ETFText), req.Notes,
 	).Scan(&id)
 	if err != nil {
 		return SwitchRecord{}, err
@@ -234,6 +237,7 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 			se.electricity_rate_id,
 			se.switch_date::text,
 			se.contract_expiration_date::text,
+			COALESCE(se.etf_text, ''),
 			COALESCE(se.notes, ''),
 			se.created_at::text,
 			COALESCE(er.rep_company, ''),
@@ -248,10 +252,54 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 		WHERE se.id = $1`, id,
 	).Scan(
 		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
-		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+		&r.ETFText, &r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
 		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
 	)
 	return r, err
+}
+
+// nullableString converts an empty string to nil for nullable TEXT columns.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func queryLatestSwitchEvent(ctx context.Context, pool *pgxpool.Pool) (SwitchRecord, bool, error) {
+	var r SwitchRecord
+	err := pool.QueryRow(ctx, `
+		SELECT
+			se.id,
+			se.electricity_rate_id,
+			se.switch_date::text,
+			se.contract_expiration_date::text,
+			COALESCE(se.etf_text, ''),
+			COALESCE(se.notes, ''),
+			se.created_at::text,
+			COALESCE(er.rep_company, ''),
+			COALESCE(er.product, ''),
+			COALESCE(er.term_value, 0),
+			COALESCE(er.rate_type, ''),
+			COALESCE(er.kwh1000::float8, 0),
+			COALESCE(er.cancel_fee, ''),
+			er.fetch_date::text
+		FROM switch_events se
+		JOIN electricity_rates er ON er.id = se.electricity_rate_id
+		ORDER BY se.switch_date DESC, se.created_at DESC
+		LIMIT 1`,
+	).Scan(
+		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
+		&r.ETFText, &r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SwitchRecord{}, false, nil
+	}
+	if err != nil {
+		return SwitchRecord{}, false, err
+	}
+	return r, true, nil
 }
 
 func absf(x float64) float64 {

@@ -58,6 +58,7 @@ func main() {
 	r.Get("/api/usage/status", handleUsageStatus(pool, smtClient))
 	r.Post("/api/usage/backfill", handleUsageBackfill(pool, smtClient))
 	r.Post("/api/projection", handleProjection(pool))
+	r.Get("/api/switch-events/latest", handleLatestSwitchEvent(pool))
 	r.Get("/api/switch-events", handleSwitchEvents(pool))
 	r.Post("/api/switch-events", handleAddSwitchEvent(pool))
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -12,19 +12,61 @@ import {
   type ChartOptions,
   type ChartData,
 } from 'chart.js'
-import { fetchProjection } from '../api'
-import type { StrategyResult, PeriodBreakdown, ProjectionRequest, Plan } from '../types'
+import { fetchProjection, fetchLatestSwitchEvent } from '../api'
+import type { StrategyResult, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord } from '../types'
 import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
 
 // ── Form state ────────────────────────────────────────────────────────────────
-const etfAmount = ref<number | ''>(0)
+const etfText = ref('')
 const contractExpiration = ref('')
+const loadedFrom = ref<SwitchRecord | null>(null)
 
 const loading = ref(false)
 const error = ref('')
 const strategies = ref<StrategyResult[]>([])
+
+// ── ETF text parser ───────────────────────────────────────────────────────────
+// Returns { etf_amount, etf_per_month_amount } from free-form ETF text.
+// Per-month patterns: "20 / remaining month", "20/remaining month.",
+//   "20/month remaining", "20 per month remaining", "20.00 per month left in term"
+function parseEtfText(text: string): { etf_amount: number; etf_per_month_amount: number } {
+  const t = text.trim()
+  if (!t) return { etf_amount: 0, etf_per_month_amount: 0 }
+  const perMonth = t.match(
+    /^(\d+(?:\.\d+)?)\s*(?:\/\s*(?:remaining\s+months?|months?\s+remaining)|per\s+month(?:\s+remaining|\s+left\s+in\s+term)?)/i,
+  )
+  if (perMonth) return { etf_amount: 0, etf_per_month_amount: parseFloat(perMonth[1]) }
+  const fixed = t.match(/^(\d+(?:\.\d+)?)/)
+  if (fixed) return { etf_amount: parseFloat(fixed[1]), etf_per_month_amount: 0 }
+  return { etf_amount: 0, etf_per_month_amount: 0 }
+}
+
+const parsedEtf = computed(() => parseEtfText(etfText.value))
+
+// Human-readable description of the parsed ETF for display below the input.
+const etfHint = computed(() => {
+  const { etf_amount, etf_per_month_amount } = parsedEtf.value
+  if (etf_per_month_amount > 0) return `$${etf_per_month_amount.toFixed(2)} × months remaining`
+  if (etf_amount > 0) return `$${etf_amount.toFixed(2)} one-time fee`
+  return 'No ETF'
+})
+
+// ── Auto-load from latest switch event ───────────────────────────────────────
+onMounted(async () => {
+  try {
+    const latest = await fetchLatestSwitchEvent()
+    if (latest) {
+      loadedFrom.value = latest
+      contractExpiration.value = latest.contract_expiration_date
+      // Prefer explicitly recorded etf_text; fall back to plan's cancel_fee.
+      etfText.value = latest.etf_text || latest.cancel_fee || ''
+    }
+  } catch {
+    // silently ignore — user can fill manually
+  }
+})
 
 // ── Table sort state ──────────────────────────────────────────────────────────
 const sortKey = ref<keyof StrategyResult>('net_savings')
@@ -242,8 +284,10 @@ async function onSubmit() {
   strategies.value = []
   selectedStrategyId.value = null
 
+  const { etf_amount, etf_per_month_amount } = parsedEtf.value
   const req: ProjectionRequest = {
-    etf_amount: Number(etfAmount.value) || 0,
+    etf_amount,
+    etf_per_month_amount,
     contract_expiration: contractExpiration.value,
   }
 
@@ -296,20 +340,26 @@ function openEnrollModal(plan: Plan, periodStart: string) {
 
     <!-- Input Form -->
     <div class="bg-white rounded-lg shadow p-5 mb-6">
-      <h2 class="text-base font-semibold text-gray-700 mb-4">Your Current Plan</h2>
+      <h2 class="text-base font-semibold text-gray-700 mb-3">Your Current Plan</h2>
+
+      <!-- Auto-loaded banner -->
+      <div v-if="loadedFrom" class="mb-4 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2 flex items-start gap-1.5">
+        <span class="font-medium shrink-0">Auto-loaded:</span>
+        <span>{{ loadedFrom.rep_company }} — {{ loadedFrom.product }} (switched {{ loadedFrom.switch_date }}, expires {{ loadedFrom.contract_expiration_date }})</span>
+      </div>
+
       <form @submit.prevent="onSubmit" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">
-            Early Termination Fee ($)
+            Early Termination Fee
           </label>
           <input
-            v-model="etfAmount"
-            type="number"
-            step="0.01"
-            min="0"
-            placeholder="0 if none"
+            v-model="etfText"
+            type="text"
+            placeholder="e.g. 0, 20, 20/remaining month"
             class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
+          <p class="mt-0.5 text-xs text-gray-400">{{ etfHint }}</p>
         </div>
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">
