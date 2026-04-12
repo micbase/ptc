@@ -216,10 +216,11 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		}
 	}
 
-	// Phase 2: historical range — always runs, overrides if cheaper.
+	// Phase 2: historical range — runs when histStart <= histEnd, overrides if cheaper.
 	// When decisionDate == today the range is inverted (histStart > histEnd) so
-	// today's live plans (phase 1) are the preferred source, but the most-recent
-	// fallback below still applies if phase 1 found nothing.
+	// phase 2 is skipped and today's live plans (phase 1) are the preferred source;
+	// the most-recent fallback below still applies if phase 1 found nothing.
+	// When histStart == histEnd, a single-day range is queried.
 	var histStart, histEnd time.Time
 	if inEnrollmentWindow {
 		histStart = pc.today.AddDate(-1, 0, 1)
@@ -229,7 +230,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		histEnd = decisionDate.AddDate(-1, 0, 0)
 	}
 	var histPlan *Plan
-	if histStart.Before(histEnd) {
+	if !histStart.After(histEnd) {
 		histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
 	}
 	if histPlan == nil {
