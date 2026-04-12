@@ -1,4 +1,4 @@
-import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategyResult, SwitchRecord, AddSwitchEventRequest } from './types'
+import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategySweep, SwitchRecord, AddSwitchEventRequest } from './types'
 
 export async function fetchLatestSwitchEvent(): Promise<SwitchRecord | null> {
   const res = await fetch(`${BASE}/switch-events/latest`)
@@ -33,7 +33,7 @@ export async function triggerFetch(): Promise<{ upserted: number; message: strin
   return res.json()
 }
 
-export async function fetchProjection(req: ProjectionRequest): Promise<StrategyResult[]> {
+export async function fetchProjection(req: ProjectionRequest): Promise<StrategySweep[]> {
   const res = await fetch(`${BASE}/projection`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

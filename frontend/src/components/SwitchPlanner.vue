@@ -13,7 +13,7 @@ import {
   type ChartData,
 } from 'chart.js'
 import { fetchProjection, fetchLatestSwitchEvent } from '../api'
-import type { StrategyResult, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord } from '../types'
+import type { StrategySweep, SweepEntry, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord } from '../types'
 import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
@@ -21,11 +21,13 @@ ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip,
 // ── Form state ────────────────────────────────────────────────────────────────
 const etfText = ref('')
 const contractExpiration = ref('')
+const currentPlanCents = ref(0)
+const currentPlanBaseFee = ref(0)
 const loadedFrom = ref<SwitchRecord | null>(null)
 
 const loading = ref(false)
 const error = ref('')
-const strategies = ref<StrategyResult[]>([])
+const sweeps = ref<StrategySweep[]>([])
 
 // ── ETF text parser ───────────────────────────────────────────────────────────
 function parseEtfText(text: string): { etf_amount: number; etf_per_month_amount: number } {
@@ -60,6 +62,8 @@ onMounted(async () => {
       loadedFrom.value = latest
       contractExpiration.value = latest.contract_expiration_date
       etfText.value = latest.cancel_fee || ''
+      currentPlanCents.value = latest.per_kwh_rate
+      currentPlanBaseFee.value = latest.base_fee
       await onSubmit()
     }
   } catch {
@@ -67,30 +71,15 @@ onMounted(async () => {
   }
 })
 
-// ── Table sort state ──────────────────────────────────────────────────────────
-const sortKey = ref<keyof StrategyResult>('net_savings')
-const sortAsc = ref(false)
-
-// ── Selected strategy (for breakdown + chart filter) ─────────────────────────
-const selectedStrategyId = ref<string | null>(null)
-
-// ── Chart tab ─────────────────────────────────────────────────────────────────
-const activeChartTab = ref<'period' | 'cumulative'>('period')
-
-// ── Strategy config ───────────────────────────────────────────────────────────
-const STRATEGY_COLORS: Record<string, string> = {
-  baseline: '#6b7280',
-  switch_at_expiry_12m: '#3b82f6',
-  switch_at_expiry_6m: '#8b5cf6',
-  switch_at_expiry_3m: '#f59e0b',
-  switch_now_12m: '#10b981',
-  switch_now_3m: '#f97316',
-  switch_now_6m: '#06b6d4',
-  switch_at_expiry_3m_or_4m: '#ec4899',
-  optimal_greedy: '#ef4444',
+// ── Strategy colors ───────────────────────────────────────────────────────────
+const SWEEP_COLORS: Record<string, string> = {
+  variable: '#6b7280',       // gray — baseline
+  rolling_3m: '#f59e0b',     // amber
+  rolling_6m: '#8b5cf6',     // purple
+  fixed_12m: '#3b82f6',      // blue
+  optimal_greedy: '#ef4444', // red
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function hexToRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16)
   const g = parseInt(hex.slice(3, 5), 16)
@@ -98,221 +87,176 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-function isSwitchPeriod(strategy: StrategyResult, period: string): boolean {
-  return strategy.switches.some((sw) => sw.effective_period === period)
-}
+// ── Selection state ───────────────────────────────────────────────────────────
+// null = show all strategies at best entry; otherwise a specific (strategyId, offset) pair
+const selectedStrategyId = ref<string | null>(null)
+const selectedOffset = ref<number | null>(null)
 
-function switchEtfForPeriod(strategy: StrategyResult, period: string): number {
-  const sw = strategy.switches.find((s) => s.effective_period === period)
-  return sw?.etf_paid ?? 0
-}
-
-function isProjectedPeriod(strategy: StrategyResult, period: string): boolean {
-  const pb = strategy.period_breakdown.find((m) => m.period === period)
-  return pb?.is_projected ?? false
-}
-
-// ── Chart strategies: default = baseline + top 3 winners; selected = vs baseline ──
-const chartStrategies = computed(() => {
-  if (selectedStrategyId.value) {
-    return strategies.value.filter(
-      (s) => s.strategy_id === selectedStrategyId.value || s.strategy_id === 'baseline',
-    )
-  }
-  const baseline = strategies.value.find((s) => s.strategy_id === 'baseline')
-  const top3 = [...strategies.value]
-    .filter((s) => s.strategy_id !== 'baseline')
-    .sort((a, b) => b.net_savings - a.net_savings)
-    .slice(0, 3)
-  return [baseline, ...top3].filter(Boolean) as StrategyResult[]
+// X-axis labels
+const offsetLabels = computed(() => {
+  if (sweeps.value.length === 0) return []
+  return sweeps.value[0].entries.map((e, i) =>
+    i === 0 ? 'Now' : `+${i}m`
+  )
 })
 
-const periodLabels = computed(() =>
-  strategies.value[0]?.period_breakdown.map((m) => m.period) ?? [],
+// ── Best overall ─────────────────────────────────────────────────────────────
+const bestOverall = computed<{ sweep: StrategySweep; entry: SweepEntry; entryIndex: number } | null>(() => {
+  if (sweeps.value.length === 0) return null
+  let best: { sweep: StrategySweep; entry: SweepEntry; entryIndex: number } | null = null
+  for (const sweep of sweeps.value) {
+    if (sweep.strategy_id === 'variable') continue
+    const entry = sweep.entries[sweep.best_entry_index]
+    if (!best || entry.savings_vs_baseline > best.entry.savings_vs_baseline) {
+      best = { sweep, entry, entryIndex: sweep.best_entry_index }
+    }
+  }
+  return best
+})
+
+const recommendation = computed(() => {
+  const b = bestOverall.value
+  if (!b) return ''
+  const months = b.entryIndex
+  const when = months === 0 ? 'immediately' : months === 1 ? 'in 1 month' : `in ${months} months`
+  const savings = b.entry.savings_vs_baseline
+  const etf = b.entry.etf_applied
+  let msg = `Best: ${b.sweep.strategy_name} ${when}`
+  if (savings > 0) msg += `, saves $${savings.toFixed(0)} vs variable baseline`
+  if (etf > 0) msg += ` (includes $${etf.toFixed(0)} ETF)`
+  else if (months > 0) msg += ` — no ETF`
+  return msg
+})
+
+// ── Sweep chart ───────────────────────────────────────────────────────────────
+const sweepChartData = computed<ChartData<'line'>>(() => {
+  const labels = offsetLabels.value
+  const datasets = sweeps.value.map((sweep) => {
+    const color = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
+    const data = sweep.entries.map((e) => e.total_cost)
+    const pointRadius = sweep.entries.map((_, i) => i === sweep.best_entry_index ? 8 : 3)
+    const pointStyle = sweep.entries.map((_, i) =>
+      i === sweep.best_entry_index ? ('rectRot' as const) : ('circle' as const)
+    )
+    const isSelected = selectedStrategyId.value !== null && selectedStrategyId.value === sweep.strategy_id
+    const isDeemphasized = selectedStrategyId.value !== null && !isSelected
+    return {
+      label: sweep.strategy_name,
+      data,
+      borderColor: isDeemphasized ? hexToRgba(color, 0.25) : color,
+      backgroundColor: isDeemphasized ? hexToRgba(color, 0.25) : color,
+      borderWidth: isSelected ? 3 : 2,
+      tension: 0.15,
+      pointRadius,
+      pointHoverRadius: 10,
+      pointStyle,
+    }
+  })
+  return { labels, datasets }
+})
+
+const sweepChartOptions = computed<ChartOptions<'line'>>(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  interaction: { mode: 'index', intersect: false },
+  scales: {
+    x: {
+      title: { display: true, text: 'Switch entry (months from today)' },
+      ticks: { maxRotation: 0 },
+    },
+    y: { title: { display: true, text: 'Total cost ($)' } },
+  },
+  plugins: {
+    legend: { position: 'top' },
+    tooltip: {
+      callbacks: {
+        title: (items) => {
+          const idx = items[0]?.dataIndex ?? 0
+          if (!sweeps.value[0]) return offsetLabels.value[idx] ?? ''
+          const ws = sweeps.value[0].entries[idx]?.window_start ?? ''
+          return `${offsetLabels.value[idx]} — enter ${ws}`
+        },
+        label: (ctx) => {
+          const sweep = sweeps.value[ctx.datasetIndex]
+          if (!sweep) return ''
+          const entry = sweep.entries[ctx.dataIndex]
+          if (!entry) return `${sweep.strategy_name}: $${(ctx.raw as number).toFixed(2)}`
+          const isBest = ctx.dataIndex === sweep.best_entry_index
+          const parts = [`${sweep.strategy_name}: $${entry.total_cost.toFixed(2)}${isBest ? ' ★ best' : ''}`]
+          if (entry.pre_switch_cost > 0) parts.push(`  pre-switch: $${entry.pre_switch_cost.toFixed(2)}`)
+          if (entry.etf_applied > 0) parts.push(`  ETF: $${entry.etf_applied.toFixed(2)}`)
+          parts.push(`  post-switch: $${entry.post_switch_cost.toFixed(2)}`)
+          if (entry.savings_vs_baseline > 0) parts.push(`  saves: $${entry.savings_vs_baseline.toFixed(2)}`)
+          return parts
+        },
+      },
+    },
+  },
+  onClick: (_event: any, elements: any[]) => {
+    if (elements.length > 0) {
+      const el = elements[0]
+      const strategyId = sweeps.value[el.datasetIndex]?.strategy_id ?? null
+      const offset = el.index
+      if (selectedStrategyId.value === strategyId && selectedOffset.value === offset) {
+        // Deselect on second click
+        selectedStrategyId.value = null
+        selectedOffset.value = null
+      } else {
+        selectedStrategyId.value = strategyId
+        selectedOffset.value = offset
+      }
+    }
+  },
+}))
+
+// ── Selected entry (for breakdown) ───────────────────────────────────────────
+const selectedEntry = computed<SweepEntry | null>(() => {
+  if (selectedStrategyId.value === null) return null
+  const sweep = sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value)
+  if (!sweep) return null
+  const idx = selectedOffset.value ?? sweep.best_entry_index
+  return sweep.entries[idx] ?? null
+})
+
+const selectedSweep = computed<StrategySweep | null>(() =>
+  sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value) ?? null
 )
 
-// ── Period cost chart data ────────────────────────────────────────────────────
-const periodCostData = computed<ChartData<'line'>>(() => {
-  const labels = periodLabels.value
-  const datasets = chartStrategies.value.map((s) => {
-    const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
-    const periodCosts = s.period_breakdown.map((m) => m.period_cost)
-    const switchPeriods = new Set(s.switches.map((sw) => sw.effective_period))
-
-    return {
-      label: s.strategy_name,
-      data: periodCosts,
-      borderColor: color,
-      backgroundColor: color,
-      borderWidth: 2,
-      tension: 0.1,
-      pointRadius: labels.map((lbl) => (switchPeriods.has(lbl) ? 7 : 2)),
-      pointHoverRadius: 9,
-      pointStyle: labels.map((lbl) => {
-        const etf = switchEtfForPeriod(s, lbl)
-        if (switchPeriods.has(lbl) && etf > 0) return 'star' as const
-        if (switchPeriods.has(lbl)) return 'circle' as const
-        return 'circle' as const
-      }),
-      segment: {
-        borderDash: (ctx: any) => (isProjectedPeriod(s, labels[ctx.p0DataIndex]) ? [6, 3] : []),
-        borderColor: (ctx: any) =>
-          hexToRgba(color, isProjectedPeriod(s, labels[ctx.p0DataIndex]) ? 0.5 : 1),
-      },
-    }
-  })
-  return { labels, datasets }
-})
-
-const periodCostOptions = computed<ChartOptions<'line'>>(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index', intersect: false },
-  scales: {
-    x: { ticks: { maxRotation: 45 } },
-    y: { title: { display: true, text: 'Period Cost ($)' } },
-  },
-  plugins: {
-    legend: { position: 'top' },
-    tooltip: {
-      callbacks: {
-        afterLabel: (ctx) => {
-          const s = chartStrategies.value[ctx.datasetIndex]
-          const lbl = periodLabels.value[ctx.dataIndex]
-          const sw = s?.switches.find((sw) => sw.effective_period === lbl)
-          if (!sw) return ''
-          const parts: string[] = [`  ↳ Switch to ${sw.plan.rep_company} @ ${sw.plan.per_kwh_rate.toFixed(2)}¢/kWh`]
-          if (sw.etf_paid > 0) parts.push(`  ⚠ ETF: $${sw.etf_paid.toFixed(2)}`)
-          return parts.join('\n')
-        },
-      },
-    },
-  },
-}))
-
-// ── Cumulative cost chart data ────────────────────────────────────────────────
-const cumulativeCostData = computed<ChartData<'line'>>(() => {
-  const labels = periodLabels.value
-  const datasets = chartStrategies.value.map((s) => {
-    const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
-    const etfByPeriod: Record<string, number> = {}
-    s.switches.forEach((sw) => {
-      if (sw.etf_paid > 0) etfByPeriod[sw.effective_period] = (etfByPeriod[sw.effective_period] ?? 0) + sw.etf_paid
-    })
-
-    let running = 0
-    const cumData = s.period_breakdown.map((pb) => {
-      running += pb.period_cost + (etfByPeriod[pb.period] ?? 0)
-      return Math.round(running * 100) / 100
-    })
-
-    return {
-      label: `${s.strategy_name} ($${(s.total_cost + s.etf_paid).toFixed(0)})`,
-      data: cumData,
-      borderColor: color,
-      backgroundColor: color,
-      borderWidth: 2,
-      tension: 0.1,
-      pointRadius: labels.map((lbl) => {
-        const etf = switchEtfForPeriod(s, lbl)
-        return etf > 0 ? 7 : 2
-      }),
-      pointStyle: labels.map((lbl) => {
-        const etf = switchEtfForPeriod(s, lbl)
-        return etf > 0 ? ('star' as const) : ('circle' as const)
-      }),
-      pointHoverRadius: 9,
-    }
-  })
-  return { labels, datasets }
-})
-
-const cumulativeCostOptions = computed<ChartOptions<'line'>>(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index', intersect: false },
-  scales: {
-    x: { ticks: { maxRotation: 45 } },
-    y: { title: { display: true, text: 'Cumulative Cost ($)' } },
-  },
-  plugins: {
-    legend: { position: 'top' },
-    tooltip: {
-      callbacks: {
-        afterLabel: (ctx) => {
-          const s = chartStrategies.value[ctx.datasetIndex]
-          const lbl = periodLabels.value[ctx.dataIndex]
-          const etf = switchEtfForPeriod(s, lbl)
-          if (etf > 0) return `  ⚠ ETF paid: $${etf.toFixed(2)}`
-          return ''
-        },
-      },
-    },
-  },
-}))
-
-// ── Table ─────────────────────────────────────────────────────────────────────
-const sortedStrategies = computed(() => {
-  const list = [...strategies.value]
-  list.sort((a, b) => {
-    const av = a[sortKey.value]
-    const bv = b[sortKey.value]
-    if (typeof av === 'string' && typeof bv === 'string') {
-      return sortAsc.value ? av.localeCompare(bv) : bv.localeCompare(av)
-    }
-    return sortAsc.value ? (av as number) - (bv as number) : (bv as number) - (av as number)
-  })
-  return list
-})
-
-function setSort(key: keyof StrategyResult) {
-  if (sortKey.value === key) {
-    sortAsc.value = !sortAsc.value
+// ── Strategy best-entry summary table ────────────────────────────────────────
+function onRowClick(strategyId: string) {
+  if (selectedStrategyId.value === strategyId && selectedOffset.value === null) {
+    selectedStrategyId.value = null
+    selectedOffset.value = null
   } else {
-    sortKey.value = key
-    sortAsc.value = false
+    selectedStrategyId.value = strategyId
+    selectedOffset.value = null // default to best entry
   }
-}
-
-const bestNetSavingsId = computed(() => {
-  let best: StrategyResult | null = null
-  for (const s of strategies.value) {
-    if (s.strategy_id === 'baseline') continue
-    if (!best || s.net_savings > best.net_savings) best = s
-  }
-  return best?.strategy_id ?? null
-})
-
-function onRowClick(id: string) {
-  selectedStrategyId.value = selectedStrategyId.value === id ? null : id
 }
 
 // ── Submit ────────────────────────────────────────────────────────────────────
 async function onSubmit() {
   error.value = ''
-  strategies.value = []
+  sweeps.value = []
   selectedStrategyId.value = null
+  selectedOffset.value = null
 
   const { etf_amount, etf_per_month_amount } = parsedEtf.value
   const req: ProjectionRequest = {
     etf_amount,
     etf_per_month_amount,
     contract_expiration: contractExpiration.value,
+    current_plan_cents: currentPlanCents.value,
+    current_plan_base_fee: currentPlanBaseFee.value,
   }
 
   loading.value = true
   try {
-    strategies.value = await fetchProjection(req)
+    sweeps.value = await fetchProjection(req)
   } catch (e: any) {
     error.value = e.message ?? 'Projection failed'
   } finally {
     loading.value = false
   }
-}
-
-function sortIcon(key: keyof StrategyResult): string {
-  if (sortKey.value !== key) return '↕'
-  return sortAsc.value ? '↑' : '↓'
 }
 
 // ── Enroll confirmation modal ─────────────────────────────────────────────────
@@ -342,9 +286,8 @@ function openEnrollModal(plan: Plan, periodStart: string) {
 <template>
   <div class="w-full px-4 py-6">
 
-    <!-- Auto-loaded banner + expandable override form (same card) -->
+    <!-- Auto-loaded banner + expandable override form -->
     <div class="bg-white rounded-lg shadow mb-6">
-      <!-- Banner row -->
       <div class="px-4 py-3 flex items-center gap-3">
         <div class="flex-1 min-w-0">
           <template v-if="loadedFrom">
@@ -372,7 +315,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
         </div>
       </div>
 
-      <!-- Override form (expands within the same card) -->
       <div v-if="showOverride" class="border-t border-gray-100 px-4 py-4">
         <form @submit.prevent="onSubmit" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div>
@@ -391,6 +333,29 @@ function openEnrollModal(plan: Plan, periodStart: string) {
               v-model="contractExpiration"
               type="date"
               required
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Current Rate (¢/kWh)</label>
+            <input
+              v-model.number="currentPlanCents"
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="e.g. 7.5"
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p class="mt-0.5 text-xs text-gray-400">Marginal ¢/kWh of current plan</p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Current Base Fee ($/mo)</label>
+            <input
+              v-model.number="currentPlanBaseFee"
+              type="number"
+              step="0.01"
+              min="0"
+              placeholder="e.g. 9.95"
               class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
@@ -416,89 +381,152 @@ function openEnrollModal(plan: Plan, periodStart: string) {
     </div>
 
     <!-- Results -->
-    <template v-if="strategies.length > 0">
+    <template v-if="sweeps.length > 0">
 
-      <!-- Strategy Comparison Table (with inline breakdown) -->
+      <!-- Best recommendation banner -->
+      <div v-if="bestOverall" class="bg-green-50 border border-green-200 rounded-lg px-4 py-3 mb-6 flex items-center gap-3">
+        <span class="text-green-700 font-semibold text-sm shrink-0">Recommendation</span>
+        <span class="text-green-800 text-sm">{{ recommendation }}</span>
+      </div>
+
+      <!-- Sweep chart -->
       <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
         <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <h2 class="text-base font-semibold text-gray-700">Strategy Comparison</h2>
-          <span class="text-xs text-gray-400">Click a row to expand period breakdown</span>
+          <h2 class="text-base font-semibold text-gray-700">Total Cost by Switch Entry Date</h2>
+          <span class="text-xs text-gray-400">Click a point to inspect that entry · ◆ = best entry per strategy</span>
+          <button
+            v-if="selectedStrategyId"
+            @click="selectedStrategyId = null; selectedOffset = null"
+            class="ml-auto text-xs text-blue-600 underline"
+          >Reset selection</button>
+        </div>
+        <div class="p-4">
+          <div style="height: 380px">
+            <Line :data="sweepChartData" :options="sweepChartOptions" style="height: 380px" />
+          </div>
+          <p class="mt-2 text-xs text-gray-400">
+            Y-axis = pre-switch cost + ETF + 12-month post-switch cost. ◆ = cheapest entry date for each strategy. Click to inspect.
+          </p>
+        </div>
+      </div>
+
+      <!-- Strategy best-entry summary table -->
+      <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-2">
+          <h2 class="text-base font-semibold text-gray-700">Best Entry per Strategy</h2>
+          <span class="text-xs text-gray-400">Click a row to inspect the 12-month breakdown</span>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="bg-gray-50 text-gray-600 text-xs uppercase">
-                <th class="text-left px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('strategy_name')">
-                  Strategy {{ sortIcon('strategy_name') }}
-                </th>
-                <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('total_cost')">
-                  12-mo Total {{ sortIcon('total_cost') }}
-                </th>
-                <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('total_savings_vs_baseline')">
-                  Savings vs Baseline {{ sortIcon('total_savings_vs_baseline') }}
-                </th>
-                <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('etf_paid')">
-                  ETF Paid {{ sortIcon('etf_paid') }}
-                </th>
-                <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('net_savings')">
-                  Net Savings {{ sortIcon('net_savings') }}
-                </th>
-                <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('switch_count')">
-                  # Switches {{ sortIcon('switch_count') }}
-                </th>
+              <tr class="bg-gray-50 text-gray-500 text-xs uppercase">
+                <th class="text-left px-4 py-3 font-medium">Strategy</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Best Entry</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Pre-switch</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">ETF</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Post-switch (12m)</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Total</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Saves vs variable</th>
               </tr>
             </thead>
             <tbody>
-              <template v-for="s in sortedStrategies" :key="s.strategy_id">
-                <!-- Strategy row -->
+              <template v-for="sweep in sweeps" :key="sweep.strategy_id">
                 <tr
                   :class="[
-                    'border-t border-gray-100 transition-colors',
-                    s.strategy_id === bestNetSavingsId ? 'bg-green-50' : '',
-                    s.strategy_id === selectedStrategyId ? 'bg-blue-50' : (s.strategy_id !== bestNetSavingsId ? 'hover:bg-gray-50' : 'hover:bg-green-100'),
-                    'cursor-pointer',
+                    'border-t border-gray-100 cursor-pointer transition-colors',
+                    sweep.strategy_id === selectedStrategyId ? 'bg-blue-50' : 'hover:bg-gray-50',
+                    sweep.strategy_id === bestOverall?.sweep.strategy_id ? 'bg-green-50 hover:bg-green-100' : '',
+                    sweep.strategy_id === selectedStrategyId && sweep.strategy_id === bestOverall?.sweep.strategy_id ? 'bg-blue-50' : '',
                   ]"
-                  @click="onRowClick(s.strategy_id)"
+                  @click="onRowClick(sweep.strategy_id)"
                 >
                   <td class="px-4 py-3">
                     <div class="flex items-center gap-2">
-                      <span
-                        class="inline-block w-3 h-3 rounded-full flex-shrink-0"
-                        :style="{ background: STRATEGY_COLORS[s.strategy_id] }"
-                      />
-                      <span class="font-medium text-gray-900">{{ s.strategy_name }}</span>
-                      <span
-                        v-if="s.strategy_id === bestNetSavingsId"
-                        class="ml-1 text-xs bg-green-600 text-white px-1.5 py-0.5 rounded"
-                      >Best</span>
+                      <span class="inline-block w-3 h-3 rounded-full shrink-0"
+                        :style="{ background: SWEEP_COLORS[sweep.strategy_id] ?? '#888' }" />
+                      <span class="font-medium text-gray-900">{{ sweep.strategy_name }}</span>
+                      <span v-if="sweep.strategy_id === 'variable'" class="text-xs text-gray-400">(baseline)</span>
+                      <span v-if="sweep.strategy_id === bestOverall?.sweep.strategy_id"
+                        class="ml-1 text-xs bg-green-600 text-white px-1.5 py-0.5 rounded">Best</span>
                       <span class="ml-auto text-gray-400 text-xs">
-                        {{ s.strategy_id === selectedStrategyId ? '▲' : '▼' }}
+                        {{ sweep.strategy_id === selectedStrategyId ? '▲' : '▼' }}
                       </span>
                     </div>
                   </td>
-                  <td class="px-4 py-3 text-right tabular-nums">${{ s.total_cost.toFixed(2) }}</td>
-                  <td class="px-4 py-3 text-right tabular-nums">
-                    <span :class="s.total_savings_vs_baseline > 0 ? 'text-green-700' : 'text-gray-500'">
-                      {{ s.total_savings_vs_baseline > 0 ? '+' : '' }}${{ s.total_savings_vs_baseline.toFixed(2) }}
-                    </span>
+                  <td class="px-4 py-3 text-right tabular-nums text-gray-700">
+                    {{ sweep.best_entry_index === 0 ? 'Now' : `+${sweep.best_entry_index}m` }}
+                    <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[sweep.best_entry_index].window_start }})</span>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums text-gray-600">
+                    {{ sweep.entries[sweep.best_entry_index].pre_switch_cost > 0
+                      ? `$${sweep.entries[sweep.best_entry_index].pre_switch_cost.toFixed(2)}`
+                      : '—' }}
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums">
-                    <span :class="s.etf_paid > 0 ? 'text-red-600' : 'text-gray-400'">
-                      {{ s.etf_paid > 0 ? `$${s.etf_paid.toFixed(2)}` : '—' }}
+                    <span :class="sweep.entries[sweep.best_entry_index].etf_applied > 0 ? 'text-red-600' : 'text-gray-400'">
+                      {{ sweep.entries[sweep.best_entry_index].etf_applied > 0
+                        ? `$${sweep.entries[sweep.best_entry_index].etf_applied.toFixed(2)}`
+                        : '—' }}
                     </span>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums text-gray-700">
+                    ${{ sweep.entries[sweep.best_entry_index].post_switch_cost.toFixed(2) }}
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums font-semibold text-gray-900">
+                    ${{ sweep.entries[sweep.best_entry_index].total_cost.toFixed(2) }}
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums font-semibold">
-                    <span :class="s.net_savings > 0 ? 'text-green-700' : s.net_savings < 0 ? 'text-red-600' : 'text-gray-500'">
-                      {{ s.net_savings > 0 ? '+' : '' }}${{ s.net_savings.toFixed(2) }}
+                    <span :class="sweep.entries[sweep.best_entry_index].savings_vs_baseline > 0 ? 'text-green-700'
+                      : sweep.entries[sweep.best_entry_index].savings_vs_baseline < 0 ? 'text-red-600'
+                      : 'text-gray-400'">
+                      {{ sweep.entries[sweep.best_entry_index].savings_vs_baseline > 0 ? '+' : '' }}${{
+                        sweep.entries[sweep.best_entry_index].savings_vs_baseline.toFixed(2) }}
                     </span>
                   </td>
-                  <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ s.switch_count }}</td>
                 </tr>
 
-                <!-- Inline period breakdown (expands below selected row) -->
-                <tr v-if="s.strategy_id === selectedStrategyId" :key="s.strategy_id + '-breakdown'">
-                  <td colspan="6" class="p-0 bg-blue-50 border-t border-blue-200">
-                    <div class="overflow-x-auto">
+                <!-- Inline breakdown for selected strategy -->
+                <tr v-if="sweep.strategy_id === selectedStrategyId" :key="sweep.strategy_id + '-breakdown'">
+                  <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
+
+                    <!-- Offset selector tabs -->
+                    <div class="px-4 pt-3 pb-1 flex items-center gap-1 flex-wrap">
+                      <span class="text-xs text-gray-500 mr-2">Entry date:</span>
+                      <button
+                        v-for="(entry, idx) in sweep.entries"
+                        :key="idx"
+                        @click.stop="selectedOffset = idx"
+                        :class="[
+                          'px-2 py-0.5 text-xs rounded border transition-colors',
+                          (selectedOffset === idx || (selectedOffset === null && idx === sweep.best_entry_index))
+                            ? 'bg-blue-600 text-white border-blue-600'
+                            : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50',
+                          idx === sweep.best_entry_index ? 'font-bold' : '',
+                        ]"
+                      >
+                        {{ idx === 0 ? 'Now' : `+${idx}m` }}
+                        <span v-if="idx === sweep.best_entry_index" class="ml-0.5">★</span>
+                      </button>
+                    </div>
+
+                    <!-- Cost summary row -->
+                    <div v-if="selectedEntry" class="px-4 py-2 flex items-center gap-6 text-xs text-gray-600 border-b border-blue-100">
+                      <span>Enter: <strong>{{ selectedEntry.window_start }}</strong></span>
+                      <template v-if="selectedEntry.pre_switch_cost > 0">
+                        <span>Pre-switch: <strong>${{ selectedEntry.pre_switch_cost.toFixed(2) }}</strong></span>
+                      </template>
+                      <template v-if="selectedEntry.etf_applied > 0">
+                        <span class="text-red-600">ETF: <strong>${{ selectedEntry.etf_applied.toFixed(2) }}</strong></span>
+                      </template>
+                      <span>Post-switch (12m): <strong>${{ selectedEntry.post_switch_cost.toFixed(2) }}</strong></span>
+                      <span>Total: <strong>${{ selectedEntry.total_cost.toFixed(2) }}</strong></span>
+                      <span :class="selectedEntry.savings_vs_baseline >= 0 ? 'text-green-700' : 'text-red-600'">
+                        vs baseline: <strong>{{ selectedEntry.savings_vs_baseline >= 0 ? '+' : '' }}${{ selectedEntry.savings_vs_baseline.toFixed(2) }}</strong>
+                      </span>
+                    </div>
+
+                    <!-- Period breakdown table -->
+                    <div v-if="selectedEntry" class="overflow-x-auto">
                       <table class="w-full text-xs">
                         <thead>
                           <tr class="text-gray-500 uppercase border-b border-blue-100">
@@ -514,7 +542,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                         </thead>
                         <tbody>
                           <tr
-                            v-for="pb in s.period_breakdown"
+                            v-for="pb in selectedEntry.period_breakdown"
                             :key="pb.period"
                             class="border-t border-blue-100"
                           >
@@ -548,53 +576,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
               </template>
             </tbody>
           </table>
-        </div>
-      </div>
-
-      <!-- Charts (tabbed) -->
-      <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
-        <!-- Tab bar -->
-        <div class="border-b border-gray-200 flex items-center gap-1 px-4 pt-3">
-          <button
-            v-for="tab in [{ id: 'period', label: 'Period Cost' }, { id: 'cumulative', label: 'Cumulative Cost' }]"
-            :key="tab.id"
-            @click="activeChartTab = tab.id as 'period' | 'cumulative'"
-            :class="[
-              'px-4 py-2 text-sm font-medium rounded-t border-b-2 transition-colors',
-              activeChartTab === tab.id
-                ? 'border-blue-500 text-blue-600 bg-blue-50'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50',
-            ]"
-          >
-            {{ tab.label }}
-          </button>
-          <span class="ml-auto text-xs text-gray-400 pb-2">
-            <template v-if="selectedStrategyId">
-              Showing {{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }} vs baseline
-              <button class="ml-2 underline text-blue-600" @click="selectedStrategyId = null">Reset</button>
-            </template>
-            <template v-else>Baseline + top 3 — click a strategy row to compare</template>
-          </span>
-        </div>
-
-        <!-- Period Cost Chart -->
-        <div v-show="activeChartTab === 'period'" class="p-4">
-          <div style="height: 360px">
-            <Line :data="periodCostData" :options="periodCostOptions" style="height: 360px" />
-          </div>
-          <p class="mt-2 text-xs text-gray-400">
-            Circles = switch events. ★ = ETF paid. Solid = live rates (can enroll now). Dashed + faded = projected.
-          </p>
-        </div>
-
-        <!-- Cumulative Cost Chart -->
-        <div v-show="activeChartTab === 'cumulative'" class="p-4">
-          <div style="height: 360px">
-            <Line :data="cumulativeCostData" :options="cumulativeCostOptions" style="height: 360px" />
-          </div>
-          <p class="mt-2 text-xs text-gray-400">
-            Includes ETF at the month it is paid. Legend labels show 12-month total cost. ★ = month ETF was paid.
-          </p>
         </div>
       </div>
 
