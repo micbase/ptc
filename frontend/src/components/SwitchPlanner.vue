@@ -229,7 +229,6 @@ const bestNetSavingsId = computed(() => {
 })
 
 function onRowClick(id: string) {
-  if (id === 'baseline') return
   selectedStrategyId.value = selectedStrategyId.value === id ? null : id
 }
 
@@ -351,7 +350,7 @@ function sortIcon(key: keyof StrategyResult): string {
     <template v-if="strategies.length > 0">
       <!-- Filter notice -->
       <div v-if="selectedStrategyId" class="mb-3 flex items-center gap-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-        <span>Charts filtered: showing <strong>{{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}</strong> vs baseline.</span>
+        <span>Charts filtered: showing <strong>{{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}</strong>{{ selectedStrategyId !== 'baseline' ? ' vs baseline' : '' }}.</span>
         <button class="ml-auto underline" @click="selectedStrategyId = null">Show all</button>
       </div>
 
@@ -417,7 +416,7 @@ function sortIcon(key: keyof StrategyResult): string {
                 :class="[
                   'border-t border-gray-100 transition-colors',
                   s.strategy_id === bestNetSavingsId ? 'bg-green-50' : 'hover:bg-gray-50',
-                  s.strategy_id !== 'baseline' ? 'cursor-pointer' : '',
+                  'cursor-pointer',
                   s.strategy_id === selectedStrategyId ? 'ring-2 ring-inset ring-blue-400' : '',
                 ]"
                 @click="onRowClick(s.strategy_id)"
