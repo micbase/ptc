@@ -98,15 +98,14 @@ func queryLatestDate(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 }
 
 // queryAllDecomposedPlans returns all ONCOR plans for every fetch_date that pass the
-// 3-point linearity check, keyed by "YYYY-MM-DD". Each LinearPlan carries the full
+// 3-point linearity check, keyed by "YYYY-MM-DD". Each Plan carries the full
 // plan metadata (company, product, term, enroll URL, etc.) alongside the decomposed
 // base_fee ($) and per_kwh_rate (¢/kWh). Today's plans are included under their date
 // key, so callers can extract them with allPlans[today].
-func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]LinearPlan, error) {
+func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]Plan, error) {
 	query := `
 		SELECT
 			fetch_date::text,
-			COALESCE(id_key, ''),
 			COALESCE(rep_company, ''),
 			COALESCE(product, ''),
 			COALESCE(rate_type, ''),
@@ -114,8 +113,6 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 			kwh500::float8,
 			kwh1000::float8,
 			kwh2000::float8,
-			COALESCE(renewable, 0),
-			COALESCE(rating::float8, 0),
 			COALESCE(enroll_url, '')
 		FROM electricity_rates
 		WHERE tdu_company_name ILIKE '%ONCOR%'
@@ -132,15 +129,15 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 	}
 	defer rows.Close()
 
-	result := make(map[string][]LinearPlan)
+	result := make(map[string][]Plan)
 	for rows.Next() {
 		var (
-			dateStr, idKey, repCompany, product, rateType, enrollURL string
-			termValue, renewable                                      int
-			rating, kwh500, kwh1000, kwh2000                         float64
+			dateStr, repCompany, product, rateType, enrollURL string
+			termValue                                         int
+			kwh500, kwh1000, kwh2000                         float64
 		)
-		if err := rows.Scan(&dateStr, &idKey, &repCompany, &product, &rateType, &termValue,
-			&kwh500, &kwh1000, &kwh2000, &renewable, &rating, &enrollURL); err != nil {
+		if err := rows.Scan(&dateStr, &repCompany, &product, &rateType, &termValue,
+			&kwh500, &kwh1000, &kwh2000, &enrollURL); err != nil {
 			return nil, err
 		}
 
@@ -160,17 +157,15 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 		if baseFee < 0 {
 			continue
 		}
-		result[dateStr] = append(result[dateStr], LinearPlan{
-			IDKey:      idKey,
-			RepCompany: repCompany,
-			Product:    product,
-			TermValue:  termValue,
-			RateType:   rateType,
-			BaseFee:    baseFee,         // $
-			PerKwhRate: rateABdol * 100, // ¢/kWh
-			Renewable:  renewable,
-			Rating:     rating,
-			EnrollURL:  enrollURL,
+		result[dateStr] = append(result[dateStr], Plan{
+			RepCompany:   repCompany,
+			Product:      product,
+			TermValue:    termValue,
+			RateType:     rateType,
+			BaseFee:      baseFee,         // $
+			PerKwhRate:   rateABdol * 100, // ¢/kWh
+			EnrollURL:    enrollURL,
+			Kwh1000Cents: kwh1000 * 100, // ¢/kWh all-in at 1000 kWh
 		})
 	}
 	return result, rows.Err()
