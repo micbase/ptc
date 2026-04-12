@@ -38,6 +38,7 @@ type ProjectionPlanInfo struct {
 	RateType           string  `json:"rate_type"`
 	ProjectedRateCents float64 `json:"projected_rate_cents"`
 	ProjectedBaseFee   float64 `json:"projected_base_fee"`
+	Kwh1000Cents       float64 `json:"kwh1000_cents"` // all-in ¢/kWh at 1000 kWh usage
 	Renewable          int     `json:"renewable"`
 	Rating             float64 `json:"rating"`
 	EnrollURL          string  `json:"enroll_url"`
@@ -134,8 +135,8 @@ func round2(v float64) float64 {
 // projectionContext holds the shared state used across the projection computation.
 type projectionContext struct {
 	today           time.Time
-	todayPlans      []LinearPlan
-	historicalPlans map[string][]decomposedRate
+	todayPlans      []LinearPlan          // plans for today, derived from allPlans[today]
+	historicalPlans map[string][]LinearPlan // all plans keyed by fetch date "YYYY-MM-DD"
 	usageMap        map[int]float64
 	estimatedMap    map[int]bool
 	avgUsage        float64
@@ -165,7 +166,8 @@ func (pc *projectionContext) dateToPeriod(d time.Time) string {
 	return periodLabel(pc.numPeriods)
 }
 
-// bestHistoricalPlan finds the cheapest historical plan for decisionDate.
+// bestHistoricalPlan finds the cheapest historical plan for decisionDate with the
+// given term. Only plans whose TermValue matches termMonths are considered.
 //
 // If today >= decisionDate−30d (within enrollment window):
 //   - Searches [today+1d−1yr, decisionDate−1yr] to cover the gap between
@@ -174,11 +176,13 @@ func (pc *projectionContext) dateToPeriod(d time.Time) string {
 // If today < decisionDate−30d (beyond enrollment window):
 //   - Searches [decisionDate−1yr−30d, decisionDate−1yr].
 //
-// Returns an error if no historical data exists for the window.
+// Falls back to the most recent available date when no data exists in the ideal
+// window. Returns nil if no matching plan is found.
 func (pc *projectionContext) bestHistoricalPlan(
+	termMonths int,
 	decisionDate time.Time,
 	numCoveredPeriods int, totalUsage float64,
-) (baseFee, rateCents float64, err error) {
+) *LinearPlan {
 	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
 
 	var histStart, histEnd time.Time
@@ -192,56 +196,88 @@ func (pc *projectionContext) bestHistoricalPlan(
 	// When decisionDate == today, histStart > histEnd (inverted). Live plans cover
 	// this case; no historical lookup needed.
 	if !histStart.Before(histEnd) {
-		return 0, 0, fmt.Errorf("no historical rate data for decision date %s", decisionDate.Format("2006-01-02"))
-	}
-	bestCost := math.MaxFloat64
-	for dateStr, candidates := range pc.historicalPlans {
-		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-		if parseErr != nil || fetchDate.Before(histStart) || fetchDate.After(histEnd) {
-			continue
-		}
-		for _, r := range candidates {
-			cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
-			if cost < bestCost {
-				bestCost = cost
-				baseFee = r.BaseFee
-				rateCents = r.PerKwhRate
-			}
-		}
-	}
-	if bestCost != math.MaxFloat64 {
-		return baseFee, rateCents, nil
+		return nil
 	}
 
-	// Fallback: no data in the ideal window — use the most recent available date.
+	searchRange := func(start, end time.Time) *LinearPlan {
+		bestCost := math.MaxFloat64
+		var best *LinearPlan
+		for dateStr, candidates := range pc.historicalPlans {
+			fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+			if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
+				continue
+			}
+			for i := range candidates {
+				r := &candidates[i]
+				if r.TermValue != termMonths {
+					continue
+				}
+				cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
+				if cost < bestCost {
+					bestCost = cost
+					best = r
+				}
+			}
+		}
+		return best
+	}
+
+	if best := searchRange(histStart, histEnd); best != nil {
+		return best
+	}
+
+	// Fallback: no data in the ideal window — use the most recent date that has
+	// at least one plan with a matching term.
 	var latestDate time.Time
 	for dateStr, candidates := range pc.historicalPlans {
-		if len(candidates) == 0 {
-			continue
-		}
 		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
 		if parseErr != nil {
 			continue
 		}
-		if fetchDate.After(latestDate) {
-			latestDate = fetchDate
+		for _, r := range candidates {
+			if r.TermValue == termMonths && fetchDate.After(latestDate) {
+				latestDate = fetchDate
+				break
+			}
 		}
 	}
 	if latestDate.IsZero() {
-		return 0, 0, fmt.Errorf("no historical rate data for decision date %s", decisionDate.Format("2006-01-02"))
+		return nil
 	}
-	for _, r := range pc.historicalPlans[latestDate.Format("2006-01-02")] {
-		cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
-		if cost < bestCost {
-			bestCost = cost
-			baseFee = r.BaseFee
-			rateCents = r.PerKwhRate
-		}
+	return searchRange(latestDate, latestDate)
+}
+
+// planLabel builds a display label for a plan. Projected plans get a "(projected)" suffix.
+func planLabel(plan *LinearPlan, isActual bool) string {
+	var termLabel string
+	if plan.TermValue == 1 {
+		termLabel = "Variable"
+	} else {
+		termLabel = fmt.Sprintf("%dm Fixed", plan.TermValue)
 	}
-	if bestCost == math.MaxFloat64 {
-		return 0, 0, fmt.Errorf("no historical rate data for decision date %s", decisionDate.Format("2006-01-02"))
+	if isActual {
+		return fmt.Sprintf("%s – %s (%s)", plan.RepCompany, plan.Product, termLabel)
 	}
-	return baseFee, rateCents, nil
+	return fmt.Sprintf("%s – %s (%s, projected)", plan.RepCompany, plan.Product, termLabel)
+}
+
+// planInfo builds a ProjectionPlanInfo from a LinearPlan's metadata and its
+// effective (possibly projected) rates. Kwh1000Cents is the all-in ¢/kWh at
+// 1000 kWh usage: (baseFee($) + 10·rateCents(¢/kWh)) / 10.
+func planInfo(plan *LinearPlan, rateCents, baseFee float64) ProjectionPlanInfo {
+	return ProjectionPlanInfo{
+		IDKey:              plan.IDKey,
+		RepCompany:         plan.RepCompany,
+		Product:            plan.Product,
+		TermValue:          plan.TermValue,
+		RateType:           plan.RateType,
+		ProjectedRateCents: rateCents,
+		ProjectedBaseFee:   baseFee,
+		Kwh1000Cents:       (baseFee + 10*rateCents) / 10,
+		Renewable:          plan.Renewable,
+		Rating:             plan.Rating,
+		EnrollURL:          plan.EnrollURL,
+	}
 }
 
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
@@ -266,12 +302,11 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		numTermPeriods = termMonths
 	}
 
-	// Phase 1: find the best live plan (only within the enrollment window).
 	bestCost := math.MaxFloat64
-	var bestFee, bestRate float64
-	var label string
-	var info ProjectionPlanInfo
+	var bestPlan *LinearPlan
 	isActual := false
+
+	// Phase 1: live plans — only within the 30-day enrollment window.
 	if !pc.today.Before(decisionDate.AddDate(0, 0, -30)) {
 		for i := range pc.todayPlans {
 			plan := &pc.todayPlans[i]
@@ -281,51 +316,35 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
 			if cost < bestCost {
 				bestCost = cost
-				bestFee, bestRate = plan.BaseFee, plan.PerKwhRate
-				if termMonths == 1 {
-					label = fmt.Sprintf("%s – %s (Variable)", plan.RepCompany, plan.Product)
-				} else {
-					label = fmt.Sprintf("%s – %s (%dm Fixed)", plan.RepCompany, plan.Product, termMonths)
-				}
-				info = ProjectionPlanInfo{
-					IDKey: plan.IDKey, RepCompany: plan.RepCompany, Product: plan.Product,
-					TermValue: plan.TermValue, RateType: plan.RateType,
-					ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
-					Renewable: plan.Renewable, Rating: plan.Rating, EnrollURL: plan.EnrollURL,
-				}
+				bestPlan = plan
 				isActual = true
 			}
 		}
 	}
 
 	// Phase 2: historical plans — always runs, overrides if cheaper.
-	if histFee, histRate, histErr := pc.bestHistoricalPlan(decisionDate, numTermPeriods, termUsage); histErr == nil {
-		if histCost := float64(numTermPeriods)*histFee + termUsage*histRate/100.0; histCost < bestCost {
+	if histPlan := pc.bestHistoricalPlan(termMonths, decisionDate, numTermPeriods, termUsage); histPlan != nil {
+		histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
+		if histCost < bestCost {
 			bestCost = histCost
-			bestFee, bestRate = histFee, histRate
-			rateType := "Fixed"
-			if termMonths == 1 {
-				rateType = "Variable"
-				label = "Best variable plan (projected)"
-			} else {
-				label = fmt.Sprintf("Best %dm fixed plan (projected)", termMonths)
-			}
-			info = ProjectionPlanInfo{
-				TermValue: termMonths, RateType: rateType,
-				ProjectedRateCents: bestRate, ProjectedBaseFee: bestFee,
-			}
+			bestPlan = histPlan
 			isActual = false
 		}
 	}
 
-	if bestCost == math.MaxFloat64 {
+	if bestPlan == nil {
 		return nil
 	}
 
 	// Phase 3: assemble result from winning source.
 	return &planResult{
-		plan: ratePlan{label: label, rateCents: bestRate, baseFee: bestFee, isActual: isActual},
-		info: info,
+		plan: ratePlan{
+			label:     planLabel(bestPlan, isActual),
+			rateCents: bestPlan.PerKwhRate,
+			baseFee:   bestPlan.BaseFee,
+			isActual:  isActual,
+		},
+		info: planInfo(bestPlan, bestPlan.PerKwhRate, bestPlan.BaseFee),
 	}
 }
 
@@ -462,7 +481,7 @@ func newProjectionContext(
 	today time.Time,
 	windowStart time.Time,
 	todayPlans []LinearPlan,
-	historicalPlans map[string][]decomposedRate,
+	historicalPlans map[string][]LinearPlan,
 ) (*projectionContext, error) {
 	const numPeriods = 12
 
@@ -528,16 +547,13 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// windowStartNow is used by "switch now" strategies: the window begins today.
 	windowStartNow := today
 
-	// Always fetch today's live plans: needed for "switch now" strategies regardless
-	// of how far expiry is in the future.
-	todayPlans, err := queryTodayPlans(ctx, pool, today)
+	// Fetch all plans (all dates) in one query. Today's plans are extracted by date key.
+	allPlans, err := queryAllDecomposedPlans(ctx, pool)
 	if err != nil {
-		return nil, fmt.Errorf("queryTodayPlans: %w", err)
+		return nil, fmt.Errorf("queryAllDecomposedPlans: %w", err)
 	}
-	historicalPlans, err := queryHistoricalDecomposedPlans(ctx, pool)
-	if err != nil {
-		return nil, fmt.Errorf("queryHistoricalDecomposedPlans: %w", err)
-	}
+	todayPlans := allPlans[today.Format("2006-01-02")]
+	historicalPlans := allPlans
 
 	// Build one context per window-start: period boundaries, usage lookups, and
 	// average-usage fallbacks all depend on where the window begins.

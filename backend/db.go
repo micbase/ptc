@@ -97,11 +97,15 @@ func queryLatestDate(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 	return d.Format("2006-01-02"), nil
 }
 
-// queryTodayPlans returns all ONCOR plans for today that pass the 3-point linearity check,
-// with decomposed base_fee ($) and per_kwh_rate (¢/kWh).
-func queryTodayPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) ([]LinearPlan, error) {
+// queryAllDecomposedPlans returns all ONCOR plans for every fetch_date that pass the
+// 3-point linearity check, keyed by "YYYY-MM-DD". Each LinearPlan carries the full
+// plan metadata (company, product, term, enroll URL, etc.) alongside the decomposed
+// base_fee ($) and per_kwh_rate (¢/kWh). Today's plans are included under their date
+// key, so callers can extract them with allPlans[today].
+func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]LinearPlan, error) {
 	query := `
 		SELECT
+			fetch_date::text,
 			COALESCE(id_key, ''),
 			COALESCE(rep_company, ''),
 			COALESCE(product, ''),
@@ -118,25 +122,24 @@ func queryTodayPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) (
 		  AND min_usage_fees_credits = false
 		  AND time_of_use = false
 		  AND language = 'English'
-		  AND fetch_date = $1
 		  AND kwh500 IS NOT NULL
 		  AND kwh1000 IS NOT NULL
 		  AND kwh2000 IS NOT NULL`
 
-	rows, err := pool.Query(ctx, query, today.Format("2006-01-02"))
+	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var plans []LinearPlan
+	result := make(map[string][]LinearPlan)
 	for rows.Next() {
 		var (
-			idKey, repCompany, product, rateType, enrollURL string
-			termValue, renewable                            int
-			rating, kwh500, kwh1000, kwh2000                float64
+			dateStr, idKey, repCompany, product, rateType, enrollURL string
+			termValue, renewable                                      int
+			rating, kwh500, kwh1000, kwh2000                         float64
 		)
-		if err := rows.Scan(&idKey, &repCompany, &product, &rateType, &termValue,
+		if err := rows.Scan(&dateStr, &idKey, &repCompany, &product, &rateType, &termValue,
 			&kwh500, &kwh1000, &kwh2000, &renewable, &rating, &enrollURL); err != nil {
 			return nil, err
 		}
@@ -157,20 +160,20 @@ func queryTodayPlans(ctx context.Context, pool *pgxpool.Pool, today time.Time) (
 		if baseFee < 0 {
 			continue
 		}
-		plans = append(plans, LinearPlan{
+		result[dateStr] = append(result[dateStr], LinearPlan{
 			IDKey:      idKey,
 			RepCompany: repCompany,
 			Product:    product,
 			TermValue:  termValue,
 			RateType:   rateType,
-			BaseFee:    baseFee,          // $
-			PerKwhRate: rateABdol * 100,  // ¢/kWh
+			BaseFee:    baseFee,         // $
+			PerKwhRate: rateABdol * 100, // ¢/kWh
 			Renewable:  renewable,
 			Rating:     rating,
 			EnrollURL:  enrollURL,
 		})
 	}
-	return plans, rows.Err()
+	return result, rows.Err()
 }
 
 func absf(x float64) float64 {
@@ -238,54 +241,3 @@ func queryPeriodUsage(ctx context.Context, pool *pgxpool.Pool, histPeriodStarts 
 	return usageMap, estimatedMap, nil
 }
 
-// decomposedRate holds the linearly-decomposed rates for a single historical plan.
-type decomposedRate struct {
-	BaseFee    float64 // $ per month
-	PerKwhRate float64 // ¢/kWh
-}
-
-// queryHistoricalDecomposedPlans returns all linearly-decomposed plans for every
-// fetch_date, keyed by "YYYY-MM-DD". All plan types (fixed and variable) are
-// included. Applies the same 3-point linearity check as queryTodayPlans.
-func queryHistoricalDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]decomposedRate, error) {
-	query := `
-		SELECT fetch_date::text, kwh500::float8, kwh1000::float8, kwh2000::float8
-		FROM electricity_rates
-		WHERE tdu_company_name ILIKE '%ONCOR%'
-		  AND min_usage_fees_credits = false
-		  AND time_of_use = false
-		  AND language = 'English'
-		  AND kwh500 IS NOT NULL AND kwh1000 IS NOT NULL AND kwh2000 IS NOT NULL`
-
-	rows, err := pool.Query(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	result := make(map[string][]decomposedRate)
-	for rows.Next() {
-		var dateStr string
-		var kwh500, kwh1000, kwh2000 float64
-		if err := rows.Scan(&dateStr, &kwh500, &kwh1000, &kwh2000); err != nil {
-			return nil, err
-		}
-		rateABdol := (1000*kwh1000 - 500*kwh500) / 500
-		rateBCdol := (2000*kwh2000 - 1000*kwh1000) / 1000
-		if rateABdol == 0 {
-			continue
-		}
-		if absf(rateABdol-rateBCdol)/absf(rateABdol) > 0.15 {
-			continue
-		}
-		baseFee := 500*kwh500 - 500*rateABdol
-		if baseFee < 0 {
-			continue
-		}
-		result[dateStr] = append(result[dateStr], decomposedRate{
-			BaseFee:    baseFee,
-			PerKwhRate: rateABdol * 100,
-		})
-	}
-	return result, rows.Err()
-}
