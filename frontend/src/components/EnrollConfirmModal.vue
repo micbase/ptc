@@ -42,7 +42,7 @@ watch(() => props.show, (val) => {
     notes.value = ''
     error.value = ''
   }
-})
+}, { immediate: true })
 
 watch(switchDate, (val) => {
   expirationDate.value = computeExpiration(val)
