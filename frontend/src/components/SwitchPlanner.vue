@@ -351,8 +351,8 @@ function openEnrollModal(plan: Plan, periodStart: string) {
       <div class="px-4 py-3 flex items-center gap-3">
         <div class="flex-1 min-w-0">
           <template v-if="loadedFrom">
-            <span class="text-xs font-semibold text-blue-700 mr-1.5">Auto-loaded:</span>
-            <span class="text-xs text-gray-700">{{ loadedFrom.rep_company }} — {{ loadedFrom.product }} (switched {{ loadedFrom.switch_date }}, expires {{ loadedFrom.contract_expiration_date }})</span>
+            <span class="text-xs font-semibold text-blue-700 mr-1.5">Current Plan:</span>
+            <span class="text-xs text-gray-700">{{ loadedFrom.rep_company }} — {{ loadedFrom.product }} (switched {{ loadedFrom.switch_date }}, expires {{ loadedFrom.contract_expiration_date }}, ETF: {{ etfHint }})</span>
           </template>
           <template v-else>
             <span class="text-xs text-gray-500">No switch history found — enter plan details manually.</span>
@@ -509,9 +509,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                 <!-- Inline period breakdown (expands below selected row) -->
                 <tr v-if="s.strategy_id === selectedStrategyId" :key="s.strategy_id + '-breakdown'">
                   <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
-                    <div class="px-4 py-3 border-b border-blue-100">
-                      <span class="text-xs font-semibold text-blue-700 uppercase tracking-wide">Period Breakdown — {{ s.strategy_name }}</span>
-                    </div>
                     <div class="overflow-x-auto">
                       <table class="w-full text-xs">
                         <thead>
