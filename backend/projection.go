@@ -216,11 +216,9 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		}
 	}
 
-	// Phase 2: historical range — runs when histStart <= histEnd, overrides if cheaper.
+	// Phase 2: historical range — always runs, overrides if cheaper.
 	// When decisionDate == today the range is inverted (histStart > histEnd) so
-	// phase 2 is skipped and today's live plans (phase 1) are the preferred source;
-	// the most-recent fallback below still applies if phase 1 found nothing.
-	// When histStart == histEnd, a single-day range is queried.
+	// today's live plans (phase 1) are the sole source.
 	var histStart, histEnd time.Time
 	if inEnrollmentWindow {
 		histStart = pc.today.AddDate(-1, 0, 1)
@@ -229,36 +227,35 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		histStart = decisionDate.AddDate(-1, 0, -30)
 		histEnd = decisionDate.AddDate(-1, 0, 0)
 	}
-	var histPlan *Plan
-	if !histStart.After(histEnd) {
-		histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
-	}
-	if histPlan == nil {
-		// Fallback: no data in ideal window (or window was inverted) — use the most
-		// recent date that has at least one plan with a matching term.
-		var latestDate time.Time
-		for dateStr, candidates := range pc.allPlans {
-			fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-			if parseErr != nil {
-				continue
-			}
-			for _, r := range candidates {
-				if r.TermValue == termMonths && fetchDate.After(latestDate) {
-					latestDate = fetchDate
-					break
+	if histStart.Before(histEnd) {
+		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
+		if histPlan == nil {
+			// Fallback: no data in ideal window — use the most recent date that has
+			// at least one plan with a matching term.
+			var latestDate time.Time
+			for dateStr, candidates := range pc.allPlans {
+				fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+				if parseErr != nil {
+					continue
+				}
+				for _, r := range candidates {
+					if r.TermValue == termMonths && fetchDate.After(latestDate) {
+						latestDate = fetchDate
+						break
+					}
 				}
 			}
+			if !latestDate.IsZero() {
+				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+			}
 		}
-		if !latestDate.IsZero() {
-			histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
-		}
-	}
-	if histPlan != nil {
-		histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
-		if histCost < bestCost {
-			bestCost = histCost
-			bestPlan = histPlan
-			isActual = false
+		if histPlan != nil {
+			histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
+			if histCost < bestCost {
+				bestCost = histCost
+				bestPlan = histPlan
+				isActual = false
+			}
 		}
 	}
 
