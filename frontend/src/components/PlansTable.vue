@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { ElectricityRate } from '../types'
+import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
 const props = defineProps<{
   plans: ElectricityRate[]
@@ -81,6 +82,25 @@ function languageBadge(lang: string) {
   if (lang === 'Spanish') return 'bg-purple-100 text-purple-800'
   return 'bg-gray-100 text-gray-800'
 }
+
+// ── Enroll confirmation modal ─────────────────────────────────────────────────
+const enrollModal = ref<{
+  show: boolean
+  plan: ElectricityRate | null
+}>({ show: false, plan: null })
+
+function openEnrollModal(plan: ElectricityRate) {
+  enrollModal.value = { show: true, plan }
+}
+
+const today = new Date().toISOString().slice(0, 10)
+
+function suggestedExpiration(plan: ElectricityRate): string {
+  if (!plan.term_value || plan.term_value <= 1) return ''
+  const d = new Date(today)
+  d.setMonth(d.getMonth() + plan.term_value)
+  return d.toISOString().slice(0, 10)
+}
 </script>
 
 <template>
@@ -120,8 +140,16 @@ function languageBadge(lang: string) {
           >
             <!-- Link columns -->
             <template v-if="col.type === 'link'">
+              <!-- Enroll URL: intercept to show confirmation modal -->
+              <template v-if="col.key === 'enroll_url'">
+                <button
+                  v-if="plan[col.key]"
+                  @click="openEnrollModal(plan)"
+                  class="text-blue-600 hover:underline text-left"
+                >Enroll</button>
+              </template>
               <a
-                v-if="plan[col.key]"
+                v-else-if="plan[col.key]"
                 :href="String(plan[col.key])"
                 target="_blank"
                 rel="noopener"
@@ -159,4 +187,20 @@ function languageBadge(lang: string) {
     </table>
     <p v-if="(plans ?? []).length === 0" class="text-center text-gray-500 py-8">No plans found for this date.</p>
   </div>
+
+  <!-- Enroll Confirmation Modal -->
+  <EnrollConfirmModal
+    v-if="enrollModal.plan"
+    :show="enrollModal.show"
+    :electricity-rate-id="enrollModal.plan.id"
+    :rep-company="enrollModal.plan.rep_company ?? ''"
+    :product="enrollModal.plan.product ?? ''"
+    :term-value="enrollModal.plan.term_value ?? 0"
+    :kwh1000-cents="(enrollModal.plan.kwh1000 ?? 0) * 100"
+    :enroll-url="enrollModal.plan.enroll_url ?? ''"
+    :suggested-switch-date="today"
+    :suggested-expiration-date="suggestedExpiration(enrollModal.plan)"
+    @close="enrollModal.show = false"
+    @recorded="enrollModal.show = false"
+  />
 </template>

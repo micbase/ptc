@@ -44,6 +44,7 @@ export interface ProjectionRequest {
 }
 
 export interface Plan {
+  electricity_rate_id: number // electricity_rates.id, for recording switch events
   rep_company: string
   product: string
   term_value: number
@@ -58,6 +59,31 @@ export interface SwitchEvent {
   effective_period: string
   etf_paid: number
   plan: Plan
+}
+
+// A recorded switch event stored in the DB switch_events table.
+export interface SwitchRecord {
+  id: number
+  electricity_rate_id: number
+  switch_date: string
+  contract_expiration_date: string
+  notes: string
+  created_at: string
+  // Joined from electricity_rates
+  rep_company: string
+  product: string
+  term_value: number
+  rate_type: string
+  kwh1000: number
+  enroll_url: string
+  fetch_date: string
+}
+
+export interface AddSwitchEventRequest {
+  electricity_rate_id: number
+  switch_date: string
+  contract_expiration_date: string
+  notes: string
 }
 
 export interface PeriodBreakdown {

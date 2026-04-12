@@ -13,7 +13,8 @@ import {
   type ChartData,
 } from 'chart.js'
 import { fetchProjection } from '../api'
-import type { StrategyResult, PeriodBreakdown, ProjectionRequest } from '../types'
+import type { StrategyResult, PeriodBreakdown, ProjectionRequest, Plan } from '../types'
+import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
 
@@ -263,6 +264,30 @@ function sortIcon(key: keyof StrategyResult): string {
   if (sortKey.value !== key) return '↕'
   return sortAsc.value ? '↑' : '↓'
 }
+
+// ── Enroll confirmation modal ─────────────────────────────────────────────────
+const enrollModal = ref<{
+  show: boolean
+  plan: Plan | null
+  switchDate: string
+  expirationDate: string
+}>({ show: false, plan: null, switchDate: '', expirationDate: '' })
+
+function openEnrollModal(plan: Plan, periodStart: string) {
+  // Default expiration = periodStart + term months
+  let expDate = ''
+  if (periodStart && plan.term_value > 1) {
+    const d = new Date(periodStart)
+    d.setMonth(d.getMonth() + plan.term_value)
+    expDate = d.toISOString().slice(0, 10)
+  }
+  enrollModal.value = {
+    show: true,
+    plan,
+    switchDate: periodStart || new Date().toISOString().slice(0, 10),
+    expirationDate: expDate,
+  }
+}
 </script>
 
 <template>
@@ -472,6 +497,11 @@ function sortIcon(key: keyof StrategyResult): string {
                 <td class="px-3 py-2 text-gray-600 max-w-xs">
                   {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
                   <span class="text-gray-400 text-xs">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
+                  <button
+                    v-if="pb.active_plan.enroll_url"
+                    @click.stop="openEnrollModal(pb.active_plan, pb.period_start)"
+                    class="ml-2 text-xs text-blue-600 hover:underline"
+                  >Enroll</button>
                 </td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.active_plan.kwh1000_cents.toFixed(2) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">
@@ -488,5 +518,21 @@ function sortIcon(key: keyof StrategyResult): string {
         </div>
       </div>
     </template>
+
+    <!-- Enroll Confirmation Modal -->
+    <EnrollConfirmModal
+      v-if="enrollModal.plan"
+      :show="enrollModal.show"
+      :electricity-rate-id="enrollModal.plan.electricity_rate_id"
+      :rep-company="enrollModal.plan.rep_company"
+      :product="enrollModal.plan.product"
+      :term-value="enrollModal.plan.term_value"
+      :kwh1000-cents="enrollModal.plan.kwh1000_cents"
+      :enroll-url="enrollModal.plan.enroll_url"
+      :suggested-switch-date="enrollModal.switchDate"
+      :suggested-expiration-date="enrollModal.expirationDate"
+      @close="enrollModal.show = false"
+      @recorded="enrollModal.show = false"
+    />
   </div>
 </template>

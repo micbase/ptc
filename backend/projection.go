@@ -12,15 +12,16 @@ import (
 // Plan is a candidate plan from the database, enriched with decomposed rates.
 // isActual is unexported: true when rates come from today's live plans, false for historical projections.
 type Plan struct {
-	RepCompany   string  `json:"rep_company"`
-	Product      string  `json:"product"`
-	TermValue    int     `json:"term_value"`
-	RateType     string  `json:"rate_type"`
-	BaseFee      float64 `json:"base_fee"`      // $ per month (decomposed)
-	PerKwhRate   float64 `json:"per_kwh_rate"`  // ¢/kWh (decomposed)
-	EnrollURL    string  `json:"enroll_url"`
-	isActual     bool    // not serialised; set by selectBestPlan
-	Kwh1000Cents float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
+	ElectricityRateID int     `json:"electricity_rate_id"` // electricity_rates.id, for recording switch events
+	RepCompany        string  `json:"rep_company"`
+	Product           string  `json:"product"`
+	TermValue         int     `json:"term_value"`
+	RateType          string  `json:"rate_type"`
+	BaseFee           float64 `json:"base_fee"`      // $ per month (decomposed)
+	PerKwhRate        float64 `json:"per_kwh_rate"`  // ¢/kWh (decomposed)
+	EnrollURL         string  `json:"enroll_url"`
+	isActual          bool    // not serialised; set by selectBestPlan
+	Kwh1000Cents      float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
 }
 
 type ProjectionRequest struct {

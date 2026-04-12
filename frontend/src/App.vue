@@ -5,8 +5,9 @@ import type { ElectricityRate, ChartPoint } from './types'
 import RateChart from './components/RateChart.vue'
 import PlansTable from './components/PlansTable.vue'
 import SwitchPlanner from './components/SwitchPlanner.vue'
+import SwitchHistory from './components/SwitchHistory.vue'
 
-type Tab = 'rates' | 'planner'
+type Tab = 'rates' | 'planner' | 'history'
 const activeTab = ref<Tab>('rates')
 
 const date = ref(new Date().toISOString().slice(0, 10))
@@ -114,6 +115,17 @@ async function onFetch() {
         >
           Switch Planner
         </button>
+        <button
+          :class="[
+            'px-4 py-3 text-sm font-medium border-b-2 transition-colors',
+            activeTab === 'history'
+              ? 'border-blue-600 text-blue-700'
+              : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300',
+          ]"
+          @click="activeTab = 'history'"
+        >
+          Switch History
+        </button>
       </nav>
     </div>
 
@@ -158,6 +170,11 @@ async function onFetch() {
     <!-- Switch Planner tab -->
     <div v-show="activeTab === 'planner'">
       <SwitchPlanner />
+    </div>
+
+    <!-- Switch History tab -->
+    <div v-show="activeTab === 'history'">
+      <SwitchHistory />
     </div>
   </div>
 </template>

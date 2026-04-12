@@ -39,3 +39,27 @@ type ChartPoint struct {
 	FetchDate string  `json:"fetch_date"`
 	Kwh1000   float64 `json:"kwh1000"`
 }
+
+type SwitchRecord struct {
+	ID                     int     `json:"id"`
+	ElectricityRateID      int     `json:"electricity_rate_id"`
+	SwitchDate             string  `json:"switch_date"`
+	ContractExpirationDate string  `json:"contract_expiration_date"`
+	Notes                  string  `json:"notes"`
+	CreatedAt              string  `json:"created_at"`
+	// Joined from electricity_rates
+	RepCompany string  `json:"rep_company"`
+	Product    string  `json:"product"`
+	TermValue  int     `json:"term_value"`
+	RateType   string  `json:"rate_type"`
+	Kwh1000    float64 `json:"kwh1000"`
+	EnrollURL  string  `json:"enroll_url"`
+	FetchDate  string  `json:"fetch_date"`
+}
+
+type AddSwitchEventRequest struct {
+	ElectricityRateID      int    `json:"electricity_rate_id"`
+	SwitchDate             string `json:"switch_date"`
+	ContractExpirationDate string `json:"contract_expiration_date"`
+	Notes                  string `json:"notes"`
+}
