@@ -280,12 +280,38 @@ func planInfo(plan *LinearPlan, rateCents, baseFee float64) ProjectionPlanInfo {
 	}
 }
 
+// bestLivePlan returns the cheapest today's-live plan for decisionDate with the
+// given term, or nil if today is outside the 30-day enrollment window.
+func (pc *projectionContext) bestLivePlan(
+	termMonths int,
+	decisionDate time.Time,
+	numCoveredPeriods int, totalUsage float64,
+) *LinearPlan {
+	if pc.today.Before(decisionDate.AddDate(0, 0, -30)) {
+		return nil
+	}
+	bestCost := math.MaxFloat64
+	var best *LinearPlan
+	for i := range pc.todayPlans {
+		plan := &pc.todayPlans[i]
+		if plan.TermValue != termMonths {
+			continue
+		}
+		cost := float64(numCoveredPeriods)*plan.BaseFee + totalUsage*plan.PerKwhRate/100.0
+		if cost < bestCost {
+			bestCost = cost
+			best = plan
+		}
+	}
+	return best
+}
+
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
 // termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 //
 // Within the 30-day enrollment window (today >= decisionDate−30d), today's live
-// plans are considered first. Historical plans are always checked and override if
-// cheaper. Returns nil if no data exists from either source.
+// plans are considered. Historical plans are always checked and win if cheaper.
+// Returns nil if no data exists from either source.
 func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *planResult {
 	termEnd := decisionDate.AddDate(0, termMonths, 0)
 
@@ -302,49 +328,38 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		numTermPeriods = termMonths
 	}
 
-	bestCost := math.MaxFloat64
-	var bestPlan *LinearPlan
+	planCost := func(p *LinearPlan) float64 {
+		return float64(numTermPeriods)*p.BaseFee + termUsage*p.PerKwhRate/100.0
+	}
+
+	livePlan := pc.bestLivePlan(termMonths, decisionDate, numTermPeriods, termUsage)
+	histPlan := pc.bestHistoricalPlan(termMonths, decisionDate, numTermPeriods, termUsage)
+
+	var best *LinearPlan
 	isActual := false
-
-	// Phase 1: live plans — only within the 30-day enrollment window.
-	if !pc.today.Before(decisionDate.AddDate(0, 0, -30)) {
-		for i := range pc.todayPlans {
-			plan := &pc.todayPlans[i]
-			if plan.TermValue != termMonths {
-				continue
-			}
-			cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
-			if cost < bestCost {
-				bestCost = cost
-				bestPlan = plan
-				isActual = true
-			}
+	switch {
+	case livePlan != nil && histPlan != nil:
+		if planCost(livePlan) <= planCost(histPlan) {
+			best, isActual = livePlan, true
+		} else {
+			best, isActual = histPlan, false
 		}
-	}
-
-	// Phase 2: historical plans — always runs, overrides if cheaper.
-	if histPlan := pc.bestHistoricalPlan(termMonths, decisionDate, numTermPeriods, termUsage); histPlan != nil {
-		histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
-		if histCost < bestCost {
-			bestCost = histCost
-			bestPlan = histPlan
-			isActual = false
-		}
-	}
-
-	if bestPlan == nil {
+	case livePlan != nil:
+		best, isActual = livePlan, true
+	case histPlan != nil:
+		best, isActual = histPlan, false
+	default:
 		return nil
 	}
 
-	// Phase 3: assemble result from winning source.
 	return &planResult{
 		plan: ratePlan{
-			label:     planLabel(bestPlan, isActual),
-			rateCents: bestPlan.PerKwhRate,
-			baseFee:   bestPlan.BaseFee,
+			label:     planLabel(best, isActual),
+			rateCents: best.PerKwhRate,
+			baseFee:   best.BaseFee,
 			isActual:  isActual,
 		},
-		info: planInfo(bestPlan, bestPlan.PerKwhRate, bestPlan.BaseFee),
+		info: planInfo(best, best.PerKwhRate, best.BaseFee),
 	}
 }
 
