@@ -426,7 +426,7 @@ func (pc *projectionContext) buildFixedRolling(termMonths int, initialETF float6
 	var segments []planSegment
 	var switches []SwitchEvent
 	isFirst := true
-	for decisionDate := pc.windowStart; decisionDate.Before(pc.windowEnd); decisionDate = decisionDate.AddDate(0, termMonths, 0) {
+	for decisionDate := pc.windowStart; decisionDate.Before(pc.windowEnd); {
 		selectDate := decisionDate
 		etf := 0.0
 		if isFirst {
@@ -434,14 +434,16 @@ func (pc *projectionContext) buildFixedRolling(termMonths int, initialETF float6
 			etf = initialETF
 			isFirst = false
 		}
+		actualTerm := termMonths
 		planRes := pc.selectBestPlan(termMonths, selectDate)
 		if planRes == nil {
 			planRes = pc.selectBestPlan(1, selectDate)
+			actualTerm = 1
 		}
 		if planRes == nil {
 			break
 		}
-		segEnd := decisionDate.AddDate(0, termMonths, 0)
+		segEnd := decisionDate.AddDate(0, actualTerm, 0)
 		if segEnd.After(pc.windowEnd) {
 			segEnd = pc.windowEnd
 		}
@@ -451,6 +453,7 @@ func (pc *projectionContext) buildFixedRolling(termMonths int, initialETF float6
 			ETFPaid:         etf,
 			Plan:            planRes.info,
 		})
+		decisionDate = decisionDate.AddDate(0, actualTerm, 0)
 	}
 	return segments, switches
 }
