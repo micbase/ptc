@@ -49,6 +49,9 @@ const etfHint = computed(() => {
   return 'No ETF'
 })
 
+// ── Override form visibility ──────────────────────────────────────────────────
+const showOverride = ref(false)
+
 // ── Auto-load from latest switch event ───────────────────────────────────────
 onMounted(async () => {
   try {
@@ -57,6 +60,7 @@ onMounted(async () => {
       loadedFrom.value = latest
       contractExpiration.value = latest.contract_expiration_date
       etfText.value = latest.cancel_fee || ''
+      await onSubmit()
     }
   } catch {
     // silently ignore — user can fill manually
@@ -340,62 +344,78 @@ function openEnrollModal(plan: Plan, periodStart: string) {
 
 <template>
   <div class="w-full px-4 py-6">
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">Switch Planner — 12-Month Projection</h1>
 
-    <!-- Input Form -->
-    <div class="bg-white rounded-lg shadow p-5 mb-6">
-      <h2 class="text-base font-semibold text-gray-700 mb-3">Your Current Plan</h2>
-
-      <!-- Auto-loaded banner -->
-      <div v-if="loadedFrom" class="mb-4 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2 flex items-start gap-1.5">
-        <span class="font-medium shrink-0">Auto-loaded:</span>
-        <span>{{ loadedFrom.rep_company }} — {{ loadedFrom.product }} (switched {{ loadedFrom.switch_date }}, expires {{ loadedFrom.contract_expiration_date }})</span>
-      </div>
-
-      <form @submit.prevent="onSubmit" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">
-            Early Termination Fee
-          </label>
-          <input
-            v-model="etfText"
-            type="text"
-            placeholder="e.g. 0, 20, 20/remaining month"
-            class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-          <p class="mt-0.5 text-xs text-gray-400">{{ etfHint }}</p>
+    <!-- Auto-loaded banner + expandable override form (same card) -->
+    <div class="bg-white rounded-lg shadow mb-6">
+      <!-- Banner row -->
+      <div class="px-4 py-3 flex items-center gap-3">
+        <div class="flex-1 min-w-0">
+          <template v-if="loadedFrom">
+            <span class="text-xs font-semibold text-blue-700 mr-1.5">Auto-loaded:</span>
+            <span class="text-xs text-gray-700">{{ loadedFrom.rep_company }} — {{ loadedFrom.product }} (switched {{ loadedFrom.switch_date }}, expires {{ loadedFrom.contract_expiration_date }})</span>
+          </template>
+          <template v-else>
+            <span class="text-xs text-gray-500">No switch history found — enter plan details manually.</span>
+          </template>
         </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">
-            Contract Expiration
-          </label>
-          <input
-            v-model="contractExpiration"
-            type="date"
-            required
-            class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-        <div class="sm:col-span-2 lg:col-span-4 flex items-center gap-4">
-          <button
-            type="submit"
-            :disabled="loading"
-            class="px-5 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {{ loading ? 'Computing…' : 'Run Projection' }}
-          </button>
-          <div v-if="loading" class="flex items-center gap-2 text-sm text-gray-500">
-            <svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+        <div class="flex items-center gap-3 shrink-0">
+          <div v-if="loading" class="flex items-center gap-1.5 text-xs text-gray-500">
+            <svg class="animate-spin h-3.5 w-3.5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
               <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
               <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
             </svg>
-            Calculating strategies…
+            Calculating…
           </div>
+          <button
+            @click="showOverride = !showOverride"
+            class="px-3 py-1.5 text-xs font-medium rounded border border-gray-300 text-gray-600 hover:bg-gray-50"
+          >
+            {{ showOverride ? 'Hide' : 'Override' }}
+          </button>
         </div>
-      </form>
-      <div v-if="error" class="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
-        {{ error }}
       </div>
+
+      <!-- Override form (expands within the same card) -->
+      <div v-if="showOverride" class="border-t border-gray-100 px-4 py-4">
+        <form @submit.prevent="onSubmit" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Early Termination Fee</label>
+            <input
+              v-model="etfText"
+              type="text"
+              placeholder="e.g. 0, 20, 20/remaining month"
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p class="mt-0.5 text-xs text-gray-400">{{ etfHint }}</p>
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Contract Expiration</label>
+            <input
+              v-model="contractExpiration"
+              type="date"
+              required
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
+          <div class="sm:col-span-2 lg:col-span-4">
+            <button
+              type="submit"
+              :disabled="loading"
+              class="px-5 py-2 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ loading ? 'Computing…' : 'Run Projection' }}
+            </button>
+          </div>
+        </form>
+        <div v-if="error" class="mt-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+          {{ error }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Error when override form is hidden -->
+    <div v-if="error && !showOverride" class="mb-6 text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+      {{ error }}
     </div>
 
     <!-- Results -->
