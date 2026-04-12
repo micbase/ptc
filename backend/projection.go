@@ -139,95 +139,50 @@ func (pc *projectionContext) dateToPeriod(d time.Time) string {
 	return periodLabel(pc.numPeriods)
 }
 
-// bestHistoricalPlan finds the cheapest historical plan for decisionDate with the
-// given term. Only plans whose TermValue matches termMonths are considered.
-//
-// If today >= decisionDate−30d (within enrollment window):
-//   - Searches [today+1d−1yr, decisionDate−1yr] to cover the gap between
-//     today and decisionDate (rates already captured by todayPlans are excluded).
-//
-// If today < decisionDate−30d (beyond enrollment window):
-//   - Searches [decisionDate−1yr−30d, decisionDate−1yr].
-//
-// Falls back to the most recent available date when no data exists in the ideal
-// window. Returns nil if no matching plan is found.
-func (pc *projectionContext) bestHistoricalPlan(
+// bestPlanInRange finds the cheapest plan within the inclusive date range [start, end]
+// with the given term. Only plans whose TermValue matches termMonths are considered.
+// Returns nil if no matching plan is found in the range.
+func (pc *projectionContext) bestPlanInRange(
 	termMonths int,
-	decisionDate time.Time,
 	numCoveredPeriods int, totalUsage float64,
+	start, end time.Time,
 ) *Plan {
-	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
-
-	var histStart, histEnd time.Time
-	if inEnrollmentWindow {
-		histStart = pc.today.AddDate(-1, 0, 1)
-		histEnd = decisionDate.AddDate(-1, 0, 0)
-	} else {
-		histStart = decisionDate.AddDate(-1, 0, -30)
-		histEnd = decisionDate.AddDate(-1, 0, 0)
-	}
-	// When decisionDate == today, histStart > histEnd (inverted). Live plans cover
-	// this case; no historical lookup needed.
-	if !histStart.Before(histEnd) {
-		return nil
-	}
-
-	searchRange := func(start, end time.Time) *Plan {
-		bestCost := math.MaxFloat64
-		var best *Plan
-		for dateStr, candidates := range pc.historicalPlans {
-			fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-			if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
-				continue
-			}
-			for i := range candidates {
-				r := &candidates[i]
-				if r.TermValue != termMonths {
-					continue
-				}
-				cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
-				if cost < bestCost {
-					bestCost = cost
-					best = r
-				}
-			}
-		}
-		return best
-	}
-
-	if best := searchRange(histStart, histEnd); best != nil {
-		return best
-	}
-
-	// Fallback: no data in the ideal window — use the most recent date that has
-	// at least one plan with a matching term.
-	var latestDate time.Time
+	bestCost := math.MaxFloat64
+	var best *Plan
 	for dateStr, candidates := range pc.historicalPlans {
 		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-		if parseErr != nil {
+		if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
 			continue
 		}
-		for _, r := range candidates {
-			if r.TermValue == termMonths && fetchDate.After(latestDate) {
-				latestDate = fetchDate
-				break
+		for i := range candidates {
+			r := &candidates[i]
+			if r.TermValue != termMonths {
+				continue
+			}
+			cost := float64(numCoveredPeriods)*r.BaseFee + totalUsage*r.PerKwhRate/100.0
+			if cost < bestCost {
+				bestCost = cost
+				best = r
 			}
 		}
 	}
-	if latestDate.IsZero() {
-		return nil
-	}
-	return searchRange(latestDate, latestDate)
+	return best
 }
 
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
 // termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 //
-// Within the 30-day enrollment window (today >= decisionDate−30d), today's live
-// plans are considered first. Historical plans are always checked and override if
-// cheaper. Returns nil if no data exists from either source.
+// Phase 1 (within the 30-day enrollment window): searches today's plans via
+// bestPlanInRange(today, today).
 //
-// The returned Plan copy has isActual set appropriately.
+// Phase 2 (always runs, overrides if cheaper): searches a historical range
+// anchored one year before decisionDate. Within the enrollment window the range
+// is [today−1yr+1d, decisionDate−1yr]; outside it is [decisionDate−1yr−30d,
+// decisionDate−1yr]. Falls back to the most recent available date when no data
+// exists in the ideal window.
+//
+// Returns nil if no data exists from either source. The returned Plan copy has
+// isActual set appropriately.
 func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *Plan {
 	termEnd := decisionDate.AddDate(0, termMonths, 0)
 
@@ -248,29 +203,60 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	var bestPlan *Plan
 	isActual := false
 
-	// Phase 1: live plans — only within the 30-day enrollment window.
-	if !pc.today.Before(decisionDate.AddDate(0, 0, -30)) {
-		for i := range pc.todayPlans {
-			plan := &pc.todayPlans[i]
-			if plan.TermValue != termMonths {
-				continue
-			}
-			cost := float64(numTermPeriods)*plan.BaseFee + termUsage*plan.PerKwhRate/100.0
+	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
+
+	// Phase 1: today's live plans — only within the 30-day enrollment window.
+	if inEnrollmentWindow {
+		if p := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, pc.today, pc.today); p != nil {
+			cost := float64(numTermPeriods)*p.BaseFee + termUsage*p.PerKwhRate/100.0
 			if cost < bestCost {
 				bestCost = cost
-				bestPlan = plan
+				bestPlan = p
 				isActual = true
 			}
 		}
 	}
 
-	// Phase 2: historical plans — always runs, overrides if cheaper.
-	if histPlan := pc.bestHistoricalPlan(termMonths, decisionDate, numTermPeriods, termUsage); histPlan != nil {
-		histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
-		if histCost < bestCost {
-			bestCost = histCost
-			bestPlan = histPlan
-			isActual = false
+	// Phase 2: historical range — always runs, overrides if cheaper.
+	// When decisionDate == today the range is inverted (histStart > histEnd) so
+	// today's live plans (phase 1) are the sole source.
+	var histStart, histEnd time.Time
+	if inEnrollmentWindow {
+		histStart = pc.today.AddDate(-1, 0, 1)
+		histEnd = decisionDate.AddDate(-1, 0, 0)
+	} else {
+		histStart = decisionDate.AddDate(-1, 0, -30)
+		histEnd = decisionDate.AddDate(-1, 0, 0)
+	}
+	if histStart.Before(histEnd) {
+		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
+		if histPlan == nil {
+			// Fallback: no data in ideal window — use the most recent date that has
+			// at least one plan with a matching term.
+			var latestDate time.Time
+			for dateStr, candidates := range pc.historicalPlans {
+				fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+				if parseErr != nil {
+					continue
+				}
+				for _, r := range candidates {
+					if r.TermValue == termMonths && fetchDate.After(latestDate) {
+						latestDate = fetchDate
+						break
+					}
+				}
+			}
+			if !latestDate.IsZero() {
+				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+			}
+		}
+		if histPlan != nil {
+			histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
+			if histCost < bestCost {
+				bestCost = histCost
+				bestPlan = histPlan
+				isActual = false
+			}
 		}
 	}
 
@@ -278,7 +264,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		return nil
 	}
 
-	// Phase 3: return a copy with isActual stamped in.
+	// Return a copy with isActual stamped in.
 	result := *bestPlan
 	result.isActual = isActual
 	return &result
