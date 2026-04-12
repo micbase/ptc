@@ -28,9 +28,6 @@ const error = ref('')
 const strategies = ref<StrategyResult[]>([])
 
 // ── ETF text parser ───────────────────────────────────────────────────────────
-// Returns { etf_amount, etf_per_month_amount } from free-form ETF text.
-// Per-month patterns: "20 / remaining month", "20/remaining month.",
-//   "20/month remaining", "20 per month remaining", "20.00 per month left in term"
 function parseEtfText(text: string): { etf_amount: number; etf_per_month_amount: number } {
   const t = text.trim()
   if (!t) return { etf_amount: 0, etf_per_month_amount: 0 }
@@ -45,7 +42,6 @@ function parseEtfText(text: string): { etf_amount: number; etf_per_month_amount:
 
 const parsedEtf = computed(() => parseEtfText(etfText.value))
 
-// Human-readable description of the parsed ETF for display below the input.
 const etfHint = computed(() => {
   const { etf_amount, etf_per_month_amount } = parsedEtf.value
   if (etf_per_month_amount > 0) return `$${etf_per_month_amount.toFixed(2)} × months remaining`
@@ -71,8 +67,11 @@ onMounted(async () => {
 const sortKey = ref<keyof StrategyResult>('net_savings')
 const sortAsc = ref(false)
 
-// ── Chart filter ──────────────────────────────────────────────────────────────
+// ── Selected strategy (for breakdown + chart filter) ─────────────────────────
 const selectedStrategyId = ref<string | null>(null)
+
+// ── Chart tab ─────────────────────────────────────────────────────────────────
+const activeChartTab = ref<'period' | 'cumulative'>('period')
 
 // ── Strategy config ───────────────────────────────────────────────────────────
 const STRATEGY_COLORS: Record<string, string> = {
@@ -109,12 +108,19 @@ function isProjectedPeriod(strategy: StrategyResult, period: string): boolean {
   return pb?.is_projected ?? false
 }
 
-// ── Filtered strategies for charts ───────────────────────────────────────────
-const visibleStrategies = computed(() => {
-  if (!selectedStrategyId.value) return strategies.value
-  return strategies.value.filter(
-    (s) => s.strategy_id === selectedStrategyId.value || s.strategy_id === 'baseline',
-  )
+// ── Chart strategies: default = baseline + top 3 winners; selected = vs baseline ──
+const chartStrategies = computed(() => {
+  if (selectedStrategyId.value) {
+    return strategies.value.filter(
+      (s) => s.strategy_id === selectedStrategyId.value || s.strategy_id === 'baseline',
+    )
+  }
+  const baseline = strategies.value.find((s) => s.strategy_id === 'baseline')
+  const top3 = [...strategies.value]
+    .filter((s) => s.strategy_id !== 'baseline')
+    .sort((a, b) => b.net_savings - a.net_savings)
+    .slice(0, 3)
+  return [baseline, ...top3].filter(Boolean) as StrategyResult[]
 })
 
 const periodLabels = computed(() =>
@@ -124,7 +130,7 @@ const periodLabels = computed(() =>
 // ── Period cost chart data ────────────────────────────────────────────────────
 const periodCostData = computed<ChartData<'line'>>(() => {
   const labels = periodLabels.value
-  const datasets = visibleStrategies.value.map((s) => {
+  const datasets = chartStrategies.value.map((s) => {
     const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
     const periodCosts = s.period_breakdown.map((m) => m.period_cost)
     const switchPeriods = new Set(s.switches.map((sw) => sw.effective_period))
@@ -167,7 +173,7 @@ const periodCostOptions = computed<ChartOptions<'line'>>(() => ({
     tooltip: {
       callbacks: {
         afterLabel: (ctx) => {
-          const s = visibleStrategies.value[ctx.datasetIndex]
+          const s = chartStrategies.value[ctx.datasetIndex]
           const lbl = periodLabels.value[ctx.dataIndex]
           const sw = s?.switches.find((sw) => sw.effective_period === lbl)
           if (!sw) return ''
@@ -183,7 +189,7 @@ const periodCostOptions = computed<ChartOptions<'line'>>(() => ({
 // ── Cumulative cost chart data ────────────────────────────────────────────────
 const cumulativeCostData = computed<ChartData<'line'>>(() => {
   const labels = periodLabels.value
-  const datasets = visibleStrategies.value.map((s) => {
+  const datasets = chartStrategies.value.map((s) => {
     const color = STRATEGY_COLORS[s.strategy_id] ?? '#888'
     const etfByPeriod: Record<string, number> = {}
     s.switches.forEach((sw) => {
@@ -230,7 +236,7 @@ const cumulativeCostOptions = computed<ChartOptions<'line'>>(() => ({
     tooltip: {
       callbacks: {
         afterLabel: (ctx) => {
-          const s = visibleStrategies.value[ctx.datasetIndex]
+          const s = chartStrategies.value[ctx.datasetIndex]
           const lbl = periodLabels.value[ctx.dataIndex]
           const etf = switchEtfForPeriod(s, lbl)
           if (etf > 0) return `  ⚠ ETF paid: $${etf.toFixed(2)}`
@@ -317,7 +323,6 @@ const enrollModal = ref<{
 }>({ show: false, plan: null, switchDate: '', expirationDate: '' })
 
 function openEnrollModal(plan: Plan, periodStart: string) {
-  // Default expiration = periodStart + term months
   let expDate = ''
   if (periodStart && plan.term_value > 1) {
     const d = new Date(periodStart)
@@ -395,39 +400,12 @@ function openEnrollModal(plan: Plan, periodStart: string) {
 
     <!-- Results -->
     <template v-if="strategies.length > 0">
-      <!-- Filter notice -->
-      <div v-if="selectedStrategyId" class="mb-3 flex items-center gap-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded px-3 py-2">
-        <span>Charts filtered: showing <strong>{{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}</strong>{{ selectedStrategyId !== 'baseline' ? ' vs baseline' : '' }}.</span>
-        <button class="ml-auto underline" @click="selectedStrategyId = null">Show all</button>
-      </div>
 
-      <!-- Panel 1: Period Cost Chart -->
-      <div class="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 class="text-base font-semibold text-gray-700 mb-3">Period Cost by Strategy</h2>
-        <div style="height: 380px">
-          <Line :data="periodCostData" :options="periodCostOptions" style="height: 380px" />
-        </div>
-        <p class="mt-2 text-xs text-gray-400">
-          Circles on lines = switch events. ★ = ETF paid at switch. Solid = today's live rates (can sign up now). Dashed + faded = projected from historical data.
-        </p>
-      </div>
-
-      <!-- Panel 2: Cumulative Cost Chart -->
-      <div class="bg-white rounded-lg shadow p-4 mb-6">
-        <h2 class="text-base font-semibold text-gray-700 mb-3">Cumulative Cost Over 12 Months</h2>
-        <div style="height: 380px">
-          <Line :data="cumulativeCostData" :options="cumulativeCostOptions" style="height: 380px" />
-        </div>
-        <p class="mt-2 text-xs text-gray-400">
-          Includes ETF cost at the month it is paid. Legend labels show 12-month total cost. ★ = month ETF was paid.
-        </p>
-      </div>
-
-      <!-- Panel 3: Strategy Comparison Table -->
+      <!-- Strategy Comparison Table (with inline breakdown) -->
       <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
         <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
           <h2 class="text-base font-semibold text-gray-700">Strategy Comparison</h2>
-          <span class="text-xs text-gray-400">Click a row to filter charts to that strategy vs baseline</span>
+          <span class="text-xs text-gray-400">Click a row to expand period breakdown</span>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -457,115 +435,167 @@ function openEnrollModal(plan: Plan, periodStart: string) {
               </tr>
             </thead>
             <tbody>
-              <tr
-                v-for="s in sortedStrategies"
-                :key="s.strategy_id"
-                :class="[
-                  'border-t border-gray-100 transition-colors',
-                  s.strategy_id === bestNetSavingsId ? 'bg-green-50' : 'hover:bg-gray-50',
-                  'cursor-pointer',
-                  s.strategy_id === selectedStrategyId ? 'ring-2 ring-inset ring-blue-400' : '',
-                ]"
-                @click="onRowClick(s.strategy_id)"
-              >
-                <td class="px-4 py-3">
-                  <div class="flex items-center gap-2">
-                    <span
-                      class="inline-block w-3 h-3 rounded-full flex-shrink-0"
-                      :style="{ background: STRATEGY_COLORS[s.strategy_id] }"
-                    />
-                    <span class="font-medium text-gray-900">{{ s.strategy_name }}</span>
-                    <span
-                      v-if="s.strategy_id === bestNetSavingsId"
-                      class="ml-1 text-xs bg-green-600 text-white px-1.5 py-0.5 rounded"
-                    >Best</span>
-                  </div>
-                </td>
-                <td class="px-4 py-3 text-right tabular-nums">${{ s.total_cost.toFixed(2) }}</td>
-                <td class="px-4 py-3 text-right tabular-nums">
-                  <span :class="s.total_savings_vs_baseline > 0 ? 'text-green-700' : 'text-gray-500'">
-                    {{ s.total_savings_vs_baseline > 0 ? '+' : '' }}${{ s.total_savings_vs_baseline.toFixed(2) }}
-                  </span>
-                </td>
-                <td class="px-4 py-3 text-right tabular-nums">
-                  <span :class="s.etf_paid > 0 ? 'text-red-600' : 'text-gray-400'">
-                    {{ s.etf_paid > 0 ? `$${s.etf_paid.toFixed(2)}` : '—' }}
-                  </span>
-                </td>
-                <td class="px-4 py-3 text-right tabular-nums font-semibold">
-                  <span :class="s.net_savings > 0 ? 'text-green-700' : s.net_savings < 0 ? 'text-red-600' : 'text-gray-500'">
-                    {{ s.net_savings > 0 ? '+' : '' }}${{ s.net_savings.toFixed(2) }}
-                  </span>
-                </td>
-                <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ s.switch_count }}</td>
-                <td class="px-4 py-3 text-center">
-                  <span :class="['text-xs font-medium capitalize', confidenceClass(s.confidence)]">
-                    {{ s.confidence }}
-                  </span>
-                </td>
-              </tr>
+              <template v-for="s in sortedStrategies" :key="s.strategy_id">
+                <!-- Strategy row -->
+                <tr
+                  :class="[
+                    'border-t border-gray-100 transition-colors',
+                    s.strategy_id === bestNetSavingsId ? 'bg-green-50' : '',
+                    s.strategy_id === selectedStrategyId ? 'bg-blue-50' : (s.strategy_id !== bestNetSavingsId ? 'hover:bg-gray-50' : 'hover:bg-green-100'),
+                    'cursor-pointer',
+                  ]"
+                  @click="onRowClick(s.strategy_id)"
+                >
+                  <td class="px-4 py-3">
+                    <div class="flex items-center gap-2">
+                      <span
+                        class="inline-block w-3 h-3 rounded-full flex-shrink-0"
+                        :style="{ background: STRATEGY_COLORS[s.strategy_id] }"
+                      />
+                      <span class="font-medium text-gray-900">{{ s.strategy_name }}</span>
+                      <span
+                        v-if="s.strategy_id === bestNetSavingsId"
+                        class="ml-1 text-xs bg-green-600 text-white px-1.5 py-0.5 rounded"
+                      >Best</span>
+                      <span class="ml-auto text-gray-400 text-xs">
+                        {{ s.strategy_id === selectedStrategyId ? '▲' : '▼' }}
+                      </span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums">${{ s.total_cost.toFixed(2) }}</td>
+                  <td class="px-4 py-3 text-right tabular-nums">
+                    <span :class="s.total_savings_vs_baseline > 0 ? 'text-green-700' : 'text-gray-500'">
+                      {{ s.total_savings_vs_baseline > 0 ? '+' : '' }}${{ s.total_savings_vs_baseline.toFixed(2) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums">
+                    <span :class="s.etf_paid > 0 ? 'text-red-600' : 'text-gray-400'">
+                      {{ s.etf_paid > 0 ? `$${s.etf_paid.toFixed(2)}` : '—' }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums font-semibold">
+                    <span :class="s.net_savings > 0 ? 'text-green-700' : s.net_savings < 0 ? 'text-red-600' : 'text-gray-500'">
+                      {{ s.net_savings > 0 ? '+' : '' }}${{ s.net_savings.toFixed(2) }}
+                    </span>
+                  </td>
+                  <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ s.switch_count }}</td>
+                  <td class="px-4 py-3 text-center">
+                    <span :class="['text-xs font-medium capitalize', confidenceClass(s.confidence)]">
+                      {{ s.confidence }}
+                    </span>
+                  </td>
+                </tr>
+
+                <!-- Inline period breakdown (expands below selected row) -->
+                <tr v-if="s.strategy_id === selectedStrategyId" :key="s.strategy_id + '-breakdown'">
+                  <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
+                    <div class="px-4 py-3 border-b border-blue-100">
+                      <span class="text-xs font-semibold text-blue-700 uppercase tracking-wide">Period Breakdown — {{ s.strategy_name }}</span>
+                    </div>
+                    <div class="overflow-x-auto">
+                      <table class="w-full text-xs">
+                        <thead>
+                          <tr class="text-gray-500 uppercase border-b border-blue-100">
+                            <th class="text-left px-3 py-2 font-medium">Period</th>
+                            <th class="text-left px-3 py-2 font-medium">Date Range</th>
+                            <th class="text-right px-3 py-2 font-medium">Usage (kWh)</th>
+                            <th class="text-left px-3 py-2 font-medium">Plan</th>
+                            <th class="text-right px-3 py-2 font-medium">¢/kWh@1000</th>
+                            <th class="text-right px-3 py-2 font-medium">Rate (¢)</th>
+                            <th class="text-right px-3 py-2 font-medium">Base Fee</th>
+                            <th class="text-right px-3 py-2 font-medium">Cost</th>
+                            <th class="text-center px-3 py-2 font-medium">Confidence</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr
+                            v-for="pb in s.period_breakdown"
+                            :key="pb.period"
+                            class="border-t border-blue-100"
+                          >
+                            <td class="px-3 py-2 font-mono text-gray-700">{{ pb.period }}</td>
+                            <td class="px-3 py-2 text-gray-500 whitespace-nowrap">{{ pb.period_start }} – {{ pb.period_end }}</td>
+                            <td class="px-3 py-2 text-right tabular-nums text-gray-700">
+                              {{ pb.usage_kwh.toFixed(0) }}
+                              <span v-if="pb.usage_is_estimated" class="text-gray-400">~</span>
+                            </td>
+                            <td class="px-3 py-2 text-gray-600 max-w-xs">
+                              {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
+                              <span class="text-gray-400">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
+                              <button
+                                v-if="pb.active_plan.enroll_url && !pb.is_projected"
+                                @click.stop="openEnrollModal(pb.active_plan, pb.period_start)"
+                                class="ml-2 text-blue-600 hover:underline"
+                              >Enroll</button>
+                            </td>
+                            <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.active_plan.kwh1000_cents.toFixed(2) }}</td>
+                            <td class="px-3 py-2 text-right tabular-nums text-gray-700">
+                              {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400" title="Projected from historical data">~</span>
+                            </td>
+                            <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
+                            <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>
+                            <td class="px-3 py-2 text-center">
+                              <span :class="['font-medium capitalize', confidenceClass(pb.confidence)]">{{ pb.confidence }}</span>
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Period Breakdown for selected strategy -->
-      <div v-if="selectedStrategyId" class="bg-white rounded-lg shadow overflow-hidden mb-6">
-        <div class="px-4 py-3 border-b border-gray-100">
-          <h2 class="text-base font-semibold text-gray-700">
-            Period Breakdown — {{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }}
-          </h2>
+      <!-- Charts (tabbed) -->
+      <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
+        <!-- Tab bar -->
+        <div class="border-b border-gray-200 flex items-center gap-1 px-4 pt-3">
+          <button
+            v-for="tab in [{ id: 'period', label: 'Period Cost' }, { id: 'cumulative', label: 'Cumulative Cost' }]"
+            :key="tab.id"
+            @click="activeChartTab = tab.id as 'period' | 'cumulative'"
+            :class="[
+              'px-4 py-2 text-sm font-medium rounded-t border-b-2 transition-colors',
+              activeChartTab === tab.id
+                ? 'border-blue-500 text-blue-600 bg-blue-50'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50',
+            ]"
+          >
+            {{ tab.label }}
+          </button>
+          <span class="ml-auto text-xs text-gray-400 pb-2">
+            <template v-if="selectedStrategyId">
+              Showing {{ strategies.find(s => s.strategy_id === selectedStrategyId)?.strategy_name }} vs baseline
+              <button class="ml-2 underline text-blue-600" @click="selectedStrategyId = null">Reset</button>
+            </template>
+            <template v-else>Baseline + top 3 — click a strategy row to compare</template>
+          </span>
         </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="bg-gray-50 text-gray-600 text-xs uppercase">
-                <th class="text-left px-3 py-2 font-medium">Period</th>
-                <th class="text-left px-3 py-2 font-medium">Date Range</th>
-                <th class="text-right px-3 py-2 font-medium">Usage (kWh)</th>
-                <th class="text-left px-3 py-2 font-medium">Plan</th>
-                <th class="text-right px-3 py-2 font-medium">¢/kWh@1000</th>
-                <th class="text-right px-3 py-2 font-medium">Rate (¢)</th>
-                <th class="text-right px-3 py-2 font-medium">Base Fee</th>
-                <th class="text-right px-3 py-2 font-medium">Cost</th>
-                <th class="text-center px-3 py-2 font-medium">Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="pb in strategies.find(s => s.strategy_id === selectedStrategyId)?.period_breakdown"
-                :key="pb.period"
-                class="border-t border-gray-100"
-              >
-                <td class="px-3 py-2 font-mono text-gray-700">{{ pb.period }}</td>
-                <td class="px-3 py-2 text-xs text-gray-500 whitespace-nowrap">{{ pb.period_start }} – {{ pb.period_end }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">
-                  {{ pb.usage_kwh.toFixed(0) }}
-                  <span v-if="pb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
-                </td>
-                <td class="px-3 py-2 text-gray-600 max-w-xs">
-                  {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
-                  <span class="text-gray-400 text-xs">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
-                  <button
-                    v-if="pb.active_plan.enroll_url"
-                    @click.stop="openEnrollModal(pb.active_plan, pb.period_start)"
-                    class="ml-2 text-xs text-blue-600 hover:underline"
-                  >Enroll</button>
-                </td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.active_plan.kwh1000_cents.toFixed(2) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">
-                  {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400 text-xs" title="Projected from historical data">~</span>
-                </td>
-                <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
-                <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>
-                <td class="px-3 py-2 text-center">
-                  <span :class="['text-xs font-medium capitalize', confidenceClass(pb.confidence)]">{{ pb.confidence }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+
+        <!-- Period Cost Chart -->
+        <div v-show="activeChartTab === 'period'" class="p-4">
+          <div style="height: 360px">
+            <Line :data="periodCostData" :options="periodCostOptions" style="height: 360px" />
+          </div>
+          <p class="mt-2 text-xs text-gray-400">
+            Circles = switch events. ★ = ETF paid. Solid = live rates (can enroll now). Dashed + faded = projected.
+          </p>
+        </div>
+
+        <!-- Cumulative Cost Chart -->
+        <div v-show="activeChartTab === 'cumulative'" class="p-4">
+          <div style="height: 360px">
+            <Line :data="cumulativeCostData" :options="cumulativeCostOptions" style="height: 360px" />
+          </div>
+          <p class="mt-2 text-xs text-gray-400">
+            Includes ETF at the month it is paid. Legend labels show 12-month total cost. ★ = month ETF was paid.
+          </p>
         </div>
       </div>
+
     </template>
 
     <!-- Enroll Confirmation Modal -->
