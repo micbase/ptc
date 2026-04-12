@@ -40,6 +40,7 @@ export interface ChartPoint {
 
 export interface ProjectionRequest {
   etf_amount: number
+  etf_per_month_amount: number
   contract_expiration: string
 }
 

@@ -26,7 +26,17 @@ type Plan struct {
 
 type ProjectionRequest struct {
 	ETFAmount          float64 `json:"etf_amount"`
+	ETFPerMonthAmount  float64 `json:"etf_per_month_amount"`
 	ContractExpiration string  `json:"contract_expiration"`
+}
+
+// monthsBetween returns the number of calendar months from a to b (rounded down).
+func monthsBetween(a, b time.Time) int {
+	m := (b.Year()-a.Year())*12 + int(b.Month()-a.Month())
+	if m < 0 {
+		return 0
+	}
+	return m
 }
 
 type SwitchEvent struct {
@@ -513,7 +523,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	etfCutoff := expiry.AddDate(0, 0, -14)
 	etfOnSwitchNow := 0.0
 	if today.Before(etfCutoff) {
-		etfOnSwitchNow = req.ETFAmount
+		if req.ETFPerMonthAmount > 0 {
+			etfOnSwitchNow = req.ETFPerMonthAmount * float64(monthsBetween(today, expiry))
+		} else {
+			etfOnSwitchNow = req.ETFAmount
+		}
 	}
 
 	var results []StrategyResult
