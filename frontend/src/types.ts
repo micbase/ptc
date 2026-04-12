@@ -75,7 +75,7 @@ export interface SwitchRecord {
   term_value: number
   rate_type: string
   kwh1000: number
-  enroll_url: string
+  cancel_fee: string
   fetch_date: string
 }
 

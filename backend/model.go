@@ -53,7 +53,7 @@ type SwitchRecord struct {
 	TermValue  int     `json:"term_value"`
 	RateType   string  `json:"rate_type"`
 	Kwh1000    float64 `json:"kwh1000"`
-	EnrollURL  string  `json:"enroll_url"`
+	CancelFee  string  `json:"cancel_fee"`
 	FetchDate  string  `json:"fetch_date"`
 }
 
