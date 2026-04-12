@@ -24,12 +24,6 @@ type Plan struct {
 	Kwh1000Cents      float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
 }
 
-type ProjectionRequest struct {
-	ETFAmount          float64 `json:"etf_amount"`
-	ETFPerMonthAmount  float64 `json:"etf_per_month_amount"`
-	ContractExpiration string  `json:"contract_expiration"`
-}
-
 // monthsBetween returns the number of calendar months from a to b (rounded down).
 func monthsBetween(a, b time.Time) int {
 	m := (b.Year()-a.Year())*12 + int(b.Month()-a.Month())
@@ -58,18 +52,6 @@ type PeriodBreakdown struct {
 	IsProjected      bool    `json:"is_projected"` // true when rates are a historical estimate, not today's live rates
 }
 
-type StrategyResult struct {
-	StrategyID             string            `json:"strategy_id"`
-	StrategyName           string            `json:"strategy_name"`
-	TotalCost              float64           `json:"total_cost"`
-	TotalSavingsVsBaseline float64           `json:"total_savings_vs_baseline"`
-	ETFPaid                float64           `json:"etf_paid"`
-	NetSavings             float64           `json:"net_savings"`
-	SwitchCount            int               `json:"switch_count"`
-	Switches               []SwitchEvent     `json:"switches"`
-	PeriodBreakdown        []PeriodBreakdown `json:"period_breakdown"`
-}
-
 // planSegment is a half-open interval [start, end) covered by a single plan.
 type planSegment struct {
 	start time.Time
@@ -95,15 +77,15 @@ func round2(v float64) float64 {
 
 // projectionContext holds the shared state used across the projection computation.
 type projectionContext struct {
-	today   time.Time
-	allPlans map[string][]Plan
-	usageMap        map[int]float64
-	estimatedMap    map[int]bool
-	avgUsage        float64
-	numPeriods      int
-	periodStarts    []time.Time
-	windowStart     time.Time
-	windowEnd       time.Time
+	today        time.Time
+	allPlans     map[string][]Plan
+	usageMap     map[int]float64
+	estimatedMap map[int]bool
+	avgUsage     float64
+	numPeriods   int
+	periodStarts []time.Time
+	windowStart  time.Time
+	windowEnd    time.Time
 }
 
 // usageForPeriod returns (usage kWh, isEstimated) for the given period index.
@@ -298,23 +280,6 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 	return breakdown, total
 }
 
-// buildResult assembles a StrategyResult from segments and switches.
-func (pc *projectionContext) buildResult(id, name string, segments []planSegment, switches []SwitchEvent, etfPaid float64) StrategyResult {
-	breakdown, total := pc.buildBreakdown(segments)
-	if switches == nil {
-		switches = []SwitchEvent{}
-	}
-	return StrategyResult{
-		StrategyID:      id,
-		StrategyName:    name,
-		TotalCost:       round2(total),
-		ETFPaid:         etfPaid,
-		SwitchCount:     len(switches),
-		Switches:        switches,
-		PeriodBreakdown: breakdown,
-	}
-}
-
 // buildGreedyRolling builds plan segments by picking the best term at each decision point.
 // termOptions: terms to evaluate (by cost-per-period over the remaining window).
 // fallbackTerm: used if no plan is found for any preferred term (0 = no fallback / stop).
@@ -380,7 +345,6 @@ func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm 
 	return segments, switches
 }
 
-
 // costForDateRange sums the projected cost for the given Plan over all
 // periods that fall within [startDate, endDate). Returns (totalCost, periodsCovered).
 func (pc *projectionContext) costForDateRange(plan Plan, startDate, endDate time.Time) (float64, int) {
@@ -397,6 +361,18 @@ func (pc *projectionContext) costForDateRange(plan Plan, startDate, endDate time
 		periodsCovered++
 	}
 	return totalCost, periodsCovered
+}
+
+// currentPlanCost computes the cost of staying on the current plan for offsetMonths
+// periods, using the current plan's base fee and per-kWh rate. Usage is taken from
+// the projection context's historical lookup (which is anchored at windowStart=today).
+func (pc *projectionContext) currentPlanCost(offsetMonths int, baseFee, perKwhCents float64) float64 {
+	total := 0.0
+	for i := 0; i < offsetMonths && i < pc.numPeriods; i++ {
+		usage, _ := pc.usageForPeriod(i)
+		total += baseFee + usage*perKwhCents/100.0
+	}
+	return total
 }
 
 // newProjectionContext builds a projectionContext anchored at the given windowStart.
@@ -441,134 +417,126 @@ func newProjectionContext(
 	}
 
 	return &projectionContext{
-		today:    today,
-		allPlans: allPlans,
-		usageMap: usageMap,
-		estimatedMap:    estimatedMap,
-		avgUsage:        avgUsage,
-		numPeriods:      numPeriods,
-		periodStarts:    periodStarts,
-		windowStart:     windowStart,
-		windowEnd:       windowEnd,
+		today:        today,
+		allPlans:     allPlans,
+		usageMap:     usageMap,
+		estimatedMap: estimatedMap,
+		avgUsage:     avgUsage,
+		numPeriods:   numPeriods,
+		periodStarts: periodStarts,
+		windowStart:  windowStart,
+		windowEnd:    windowEnd,
 	}, nil
 }
 
-func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategyResult, error) {
+// strategySpec describes one sweep strategy.
+type strategySpec struct {
+	id, name    string
+	termOptions []int
+	fallback    int
+}
+
+var sweepStrategies = []strategySpec{
+	{"variable", "Best variable monthly", []int{1}, 1},
+	{"rolling_3m", "3-month rolling", []int{3}, 1},
+	{"rolling_6m", "6-month rolling", []int{6}, 1},
+	{"fixed_12m", "12-month fixed", []int{12}, 1},
+	{"optimal_greedy", "Optimal greedy (3/4/6/12m)", []int{3, 4, 6, 12}, 1},
+}
+
+// computeSweep builds a StrategySweep for each strategy type. For each strategy,
+// 12 entry dates are evaluated (today + 0..11 months). Each entry captures
+// the pre-switch cost (current plan), any applicable ETF, and the 12-month
+// post-switch cost anchored at that entry date. The "variable" strategy serves
+// as the per-offset baseline for savings comparisons.
+func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest, today time.Time) ([]StrategySweep, error) {
 	expiry, err := time.Parse("2006-01-02", req.ContractExpiration)
 	if err != nil {
 		return nil, fmt.Errorf("invalid contract_expiration: %w", err)
 	}
 	expiry = time.Date(expiry.Year(), expiry.Month(), expiry.Day(), 0, 0, 0, 0, time.UTC)
 
-	// windowStartExpiry is used by "at expiry" strategies:
-	//   - expiry date if it's in the future
-	//   - today if contract has already expired
-	windowStartExpiry := expiry
-	if expiry.Before(today) {
-		windowStartExpiry = today
-	}
-
-	// windowStartNow is used by "switch now" strategies: the window begins today.
-	windowStartNow := today
-
-	// Fetch all plans (all dates) in one query.
 	allPlans, err := queryAllDecomposedPlans(ctx, pool)
 	if err != nil {
 		return nil, fmt.Errorf("queryAllDecomposedPlans: %w", err)
 	}
 
-	// Build one context per window-start: period boundaries, usage lookups, and
-	// average-usage fallbacks all depend on where the window begins.
-	pcExpiry, err := newProjectionContext(ctx, pool, today, windowStartExpiry, allPlans)
-	if err != nil {
-		return nil, err
-	}
-	pcNow, err := newProjectionContext(ctx, pool, today, windowStartNow, allPlans)
+	// Build today-anchored context: usage lookups for the pre-switch periods 0..11.
+	pcToday, err := newProjectionContext(ctx, pool, today, today, allPlans)
 	if err != nil {
 		return nil, err
 	}
 
-	// ETF applies if switching today is before (expiry − 14 days).
 	etfCutoff := expiry.AddDate(0, 0, -14)
-	etfOnSwitchNow := 0.0
-	if today.Before(etfCutoff) {
+
+	// etfForWindowStart returns the ETF owed if switching at the given date.
+	etfForWindowStart := func(windowStart time.Time) float64 {
+		if !windowStart.Before(etfCutoff) {
+			return 0.0
+		}
 		if req.ETFPerMonthAmount > 0 {
-			etfOnSwitchNow = req.ETFPerMonthAmount * float64(monthsBetween(today, expiry))
-		} else {
-			etfOnSwitchNow = req.ETFAmount
+			return req.ETFPerMonthAmount * float64(monthsBetween(windowStart, expiry))
+		}
+		return req.ETFAmount
+	}
+
+	const numOffsets = 12
+	sweeps := make([]StrategySweep, len(sweepStrategies))
+
+	for si, spec := range sweepStrategies {
+		sweep := StrategySweep{
+			StrategyID:   spec.id,
+			StrategyName: spec.name,
+			Entries:      make([]SweepEntry, numOffsets),
+		}
+
+		for offset := 0; offset < numOffsets; offset++ {
+			windowStart := today.AddDate(0, offset, 0)
+			etf := etfForWindowStart(windowStart)
+			preCost := round2(pcToday.currentPlanCost(offset, req.CurrentPlanBaseFee, req.CurrentPlanCents))
+
+			pc, err := newProjectionContext(ctx, pool, today, windowStart, allPlans)
+			if err != nil {
+				return nil, err
+			}
+
+			segments, switches := pc.buildGreedyRolling(spec.termOptions, spec.fallback, etf, windowStart)
+			breakdown, postCost := pc.buildBreakdown(segments)
+			if switches == nil {
+				switches = []SwitchEvent{}
+			}
+
+			sweep.Entries[offset] = SweepEntry{
+				WindowStart:     windowStart.Format("2006-01-02"),
+				MonthsFromToday: offset,
+				PreSwitchCost:   preCost,
+				ETFApplied:      round2(etf),
+				PostSwitchCost:  round2(postCost),
+				TotalCost:       round2(preCost + etf + postCost),
+				PeriodBreakdown: breakdown,
+				Switches:        switches,
+				SwitchCount:     len(switches),
+			}
+		}
+
+		// Best entry = lowest TotalCost.
+		bestIdx := 0
+		for i := 1; i < numOffsets; i++ {
+			if sweep.Entries[i].TotalCost < sweep.Entries[bestIdx].TotalCost {
+				bestIdx = i
+			}
+		}
+		sweep.BestEntryIndex = bestIdx
+		sweeps[si] = sweep
+	}
+
+	// Savings vs variable baseline (index 0) at the same offset.
+	for si := range sweeps {
+		for offset := 0; offset < numOffsets; offset++ {
+			savings := round2(sweeps[0].Entries[offset].TotalCost - sweeps[si].Entries[offset].TotalCost)
+			sweeps[si].Entries[offset].SavingsVsBaseline = savings
 		}
 	}
 
-	var results []StrategyResult
-
-	// ── 1. BASELINE ───────────────────────────────────────────────────────────
-	// From expiry, switch to the best variable (1-month) plan every month.
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{1}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("baseline", "Baseline — best variable monthly from expiry", segments, switches, 0))
-	}
-
-	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{12}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("switch_at_expiry_12m", "Switch at expiry — 12-month fixed", segments, switches, 0))
-	}
-
-	// ── 3. SWITCH_AT_EXPIRY_6M ────────────────────────────────────────────────
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{6}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("switch_at_expiry_6m", "Switch at expiry — 6-month rolling", segments, switches, 0))
-	}
-
-	// ── 4. SWITCH_AT_EXPIRY_3M ────────────────────────────────────────────────
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{3}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m", "Switch at expiry — 3-month rolling", segments, switches, 0))
-	}
-
-	// ── 5. SWITCH_NOW_12M ─────────────────────────────────────────────────────
-	// Window starts today; period boundaries and usage are anchored to today.
-	// firstDecisionDate == windowStart == today, so today's live rates cover T+1.
-	{
-		segments, switches := pcNow.buildGreedyRolling([]int{12}, 1, etfOnSwitchNow, today)
-		results = append(results, pcNow.buildResult("switch_now_12m", "Switch now — 12-month fixed", segments, switches, etfOnSwitchNow))
-	}
-
-	// ── 6. SWITCH_NOW_3M ──────────────────────────────────────────────────────
-	{
-		segments, switches := pcNow.buildGreedyRolling([]int{3}, 1, etfOnSwitchNow, today)
-		results = append(results, pcNow.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
-	}
-
-	// ── 7. SWITCH_NOW_6M ──────────────────────────────────────────────────────
-	{
-		segments, switches := pcNow.buildGreedyRolling([]int{6}, 1, etfOnSwitchNow, today)
-		results = append(results, pcNow.buildResult("switch_now_6m", "Switch now — 6-month rolling", segments, switches, etfOnSwitchNow))
-	}
-
-	// ── 8. SWITCH_AT_EXPIRY_3M_OR_4M ─────────────────────────────────────────
-	// Pick the cheaper of 3-month and 4-month at each renewal; fallback to 1m.
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{3, 4}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m_or_4m", "Switch at expiry — best 3 or 4-month rolling", segments, switches, 0))
-	}
-
-	// ── 9. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
-	// At each decision point pick the term (1/3/6/12m) with the lowest
-	// cost-per-period over the remaining window. 1m is always available so no
-	// separate fallback is needed.
-	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{3, 4, 6, 12}, 1, 0, windowStartExpiry)
-		results = append(results, pcExpiry.buildResult("optimal_greedy", "Optimal — greedy at each decision point", segments, switches, 0))
-	}
-
-	// Savings vs baseline
-	baselineCost := results[0].TotalCost
-	for i := range results {
-		savings := round2(baselineCost - results[i].TotalCost)
-		results[i].TotalSavingsVsBaseline = savings
-		results[i].NetSavings = round2(savings - results[i].ETFPaid)
-	}
-
-	return results, nil
+	return sweeps, nil
 }

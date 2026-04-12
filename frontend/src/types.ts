@@ -42,6 +42,8 @@ export interface ProjectionRequest {
   etf_amount: number
   etf_per_month_amount: number
   contract_expiration: string
+  current_plan_cents: number    // ¢/kWh (decomposed marginal rate)
+  current_plan_base_fee: number // $ per month
 }
 
 export interface Plan {
@@ -78,6 +80,9 @@ export interface SwitchRecord {
   kwh1000: number
   cancel_fee: string
   fetch_date: string
+  // Decomposed rates
+  base_fee: number     // $ per month
+  per_kwh_rate: number // ¢/kWh (marginal)
 }
 
 export interface AddSwitchEventRequest {
@@ -100,14 +105,24 @@ export interface PeriodBreakdown {
   is_projected: boolean  // true when rates are a historical estimate, not today's live rates
 }
 
-export interface StrategyResult {
+// One candidate entry date within a strategy sweep.
+export interface SweepEntry {
+  window_start: string        // "YYYY-MM-DD"
+  months_from_today: number   // 0..11
+  pre_switch_cost: number     // current plan cost today → window_start
+  etf_applied: number         // ETF owed if switching at window_start
+  post_switch_cost: number    // 12-month strategy cost from window_start
+  total_cost: number          // pre + ETF + post
+  savings_vs_baseline: number // vs variable baseline at same offset
+  period_breakdown: PeriodBreakdown[]
+  switches: SwitchEvent[]
+  switch_count: number
+}
+
+// Sweep over 12 entry-date options for one strategy type.
+export interface StrategySweep {
   strategy_id: string
   strategy_name: string
-  total_cost: number
-  total_savings_vs_baseline: number
-  etf_paid: number
-  net_savings: number
-  switch_count: number
-  switches: SwitchEvent[]
-  period_breakdown: PeriodBreakdown[]
+  entries: SweepEntry[]      // indices 0..11 (months from today)
+  best_entry_index: number   // index with lowest total_cost
 }

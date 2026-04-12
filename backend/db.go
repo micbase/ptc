@@ -175,27 +175,30 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 	return result, rows.Err()
 }
 
+// decomposeRate computes base_fee ($) and per_kwh_rate (¢/kWh) from the three-point
+// electricity rate data. Returns (0, 0) if the data fails the linearity check.
+func decomposeRate(kwh500, kwh1000, kwh2000 float64) (baseFee, perKwhRate float64) {
+	rateABdol := (1000*kwh1000 - 500*kwh500) / 500
+	if absf(rateABdol) < 1e-9 {
+		return 0, 0
+	}
+	rateBCdol := (2000*kwh2000 - 1000*kwh1000) / 1000
+	if absf(rateABdol-rateBCdol)/absf(rateABdol) > 0.15 {
+		return 0, 0
+	}
+	bf := 500*kwh500 - 500*rateABdol
+	if bf < 0 {
+		return 0, 0
+	}
+	return bf, rateABdol * 100
+}
+
 func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord, error) {
-	query := `
-		SELECT
-			se.id,
-			se.electricity_rate_id,
-			se.switch_date::text,
-			se.contract_expiration_date::text,
-			COALESCE(se.notes, ''),
-			se.created_at::text,
-			COALESCE(er.rep_company, ''),
-			COALESCE(er.product, ''),
-			COALESCE(er.term_value, 0),
-			COALESCE(er.rate_type, ''),
-			COALESCE(er.kwh1000::float8, 0),
-			COALESCE(er.cancel_fee, ''),
-			er.fetch_date::text
+	rows, err := pool.Query(ctx, `
+		SELECT `+switchEventSelectCols+`
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
-		ORDER BY se.switch_date DESC, se.created_at DESC`
-
-	rows, err := pool.Query(ctx, query)
+		ORDER BY se.switch_date DESC, se.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -204,16 +207,53 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 	records := make([]SwitchRecord, 0)
 	for rows.Next() {
 		var r SwitchRecord
+		var kwh500, kwh2000 float64
 		if err := rows.Scan(
 			&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
 			&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
 			&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
+			&kwh500, &kwh2000,
 		); err != nil {
 			return nil, err
 		}
+		r.BaseFee, r.PerKwhRate = decomposeRate(kwh500, r.Kwh1000, kwh2000)
 		records = append(records, r)
 	}
 	return records, rows.Err()
+}
+
+const switchEventSelectCols = `
+		se.id,
+		se.electricity_rate_id,
+		se.switch_date::text,
+		se.contract_expiration_date::text,
+		COALESCE(se.notes, ''),
+		se.created_at::text,
+		COALESCE(er.rep_company, ''),
+		COALESCE(er.product, ''),
+		COALESCE(er.term_value, 0),
+		COALESCE(er.rate_type, ''),
+		COALESCE(er.kwh1000::float8, 0),
+		COALESCE(er.cancel_fee, ''),
+		er.fetch_date::text,
+		COALESCE(er.kwh500::float8, 0),
+		COALESCE(er.kwh2000::float8, 0)`
+
+func scanSwitchRecord(row interface {
+	Scan(dest ...any) error
+}) (SwitchRecord, error) {
+	var r SwitchRecord
+	var kwh500, kwh2000 float64
+	if err := row.Scan(
+		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
+		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
+		&kwh500, &kwh2000,
+	); err != nil {
+		return SwitchRecord{}, err
+	}
+	r.BaseFee, r.PerKwhRate = decomposeRate(kwh500, r.Kwh1000, kwh2000)
+	return r, nil
 }
 
 func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEventRequest) (SwitchRecord, error) {
@@ -228,59 +268,22 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 		return SwitchRecord{}, err
 	}
 
-	var r SwitchRecord
-	err = pool.QueryRow(ctx, `
-		SELECT
-			se.id,
-			se.electricity_rate_id,
-			se.switch_date::text,
-			se.contract_expiration_date::text,
-			COALESCE(se.notes, ''),
-			se.created_at::text,
-			COALESCE(er.rep_company, ''),
-			COALESCE(er.product, ''),
-			COALESCE(er.term_value, 0),
-			COALESCE(er.rate_type, ''),
-			COALESCE(er.kwh1000::float8, 0),
-			COALESCE(er.cancel_fee, ''),
-			er.fetch_date::text
+	row := pool.QueryRow(ctx, `
+		SELECT `+switchEventSelectCols+`
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
-		WHERE se.id = $1`, id,
-	).Scan(
-		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
-		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
-		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
-	)
-	return r, err
+		WHERE se.id = $1`, id)
+	return scanSwitchRecord(row)
 }
 
 func queryLatestSwitchEvent(ctx context.Context, pool *pgxpool.Pool) (SwitchRecord, bool, error) {
-	var r SwitchRecord
-	err := pool.QueryRow(ctx, `
-		SELECT
-			se.id,
-			se.electricity_rate_id,
-			se.switch_date::text,
-			se.contract_expiration_date::text,
-			COALESCE(se.notes, ''),
-			se.created_at::text,
-			COALESCE(er.rep_company, ''),
-			COALESCE(er.product, ''),
-			COALESCE(er.term_value, 0),
-			COALESCE(er.rate_type, ''),
-			COALESCE(er.kwh1000::float8, 0),
-			COALESCE(er.cancel_fee, ''),
-			er.fetch_date::text
+	row := pool.QueryRow(ctx, `
+		SELECT `+switchEventSelectCols+`
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
 		ORDER BY se.switch_date DESC, se.created_at DESC
-		LIMIT 1`,
-	).Scan(
-		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
-		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
-		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
-	)
+		LIMIT 1`)
+	r, err := scanSwitchRecord(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SwitchRecord{}, false, nil
 	}

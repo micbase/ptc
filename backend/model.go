@@ -55,6 +55,9 @@ type SwitchRecord struct {
 	Kwh1000    float64 `json:"kwh1000"`
 	CancelFee  string  `json:"cancel_fee"`
 	FetchDate  string  `json:"fetch_date"`
+	// Decomposed rates (computed from kwh500/1000/2000)
+	BaseFee    float64 `json:"base_fee"`     // $ per month
+	PerKwhRate float64 `json:"per_kwh_rate"` // ¢/kWh (marginal)
 }
 
 type AddSwitchEventRequest struct {
@@ -62,4 +65,37 @@ type AddSwitchEventRequest struct {
 	SwitchDate             string `json:"switch_date"`
 	ContractExpirationDate string `json:"contract_expiration_date"`
 	Notes                  string `json:"notes"`
+}
+
+// ProjectionRequest specifies ETF terms, contract expiration, and current plan rates.
+// CurrentPlanCents and CurrentPlanBaseFee are the decomposed marginal rate (¢/kWh)
+// and base fee ($/month) of the user's current plan, used to price the pre-switch period.
+type ProjectionRequest struct {
+	ETFAmount          float64 `json:"etf_amount"`
+	ETFPerMonthAmount  float64 `json:"etf_per_month_amount"`
+	ContractExpiration string  `json:"contract_expiration"`
+	CurrentPlanCents   float64 `json:"current_plan_cents"`    // ¢/kWh (decomposed marginal rate)
+	CurrentPlanBaseFee float64 `json:"current_plan_base_fee"` // $ per month
+}
+
+// SweepEntry represents one candidate entry date within a strategy sweep.
+type SweepEntry struct {
+	WindowStart       string            `json:"window_start"`        // "YYYY-MM-DD"
+	MonthsFromToday   int               `json:"months_from_today"`   // 0..11
+	PreSwitchCost     float64           `json:"pre_switch_cost"`     // current plan cost today → windowStart
+	ETFApplied        float64           `json:"etf_applied"`         // ETF owed if switching at windowStart
+	PostSwitchCost    float64           `json:"post_switch_cost"`    // 12-month strategy cost from windowStart
+	TotalCost         float64           `json:"total_cost"`          // pre + ETF + post
+	SavingsVsBaseline float64           `json:"savings_vs_baseline"` // vs variable baseline at same offset
+	PeriodBreakdown   []PeriodBreakdown `json:"period_breakdown"`    // 12 periods anchored at windowStart
+	Switches          []SwitchEvent     `json:"switches"`
+	SwitchCount       int               `json:"switch_count"`
+}
+
+// StrategySweep holds all 12 entry-date options for one strategy type.
+type StrategySweep struct {
+	StrategyID     string       `json:"strategy_id"`
+	StrategyName   string       `json:"strategy_name"`
+	Entries        []SweepEntry `json:"entries"`        // indices 0..11 (months from today)
+	BestEntryIndex int          `json:"best_entry_index"` // index with lowest TotalCost
 }
