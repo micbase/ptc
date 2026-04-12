@@ -534,7 +534,71 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		results = append(results, pcNow.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
-	// ── 7. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
+	// ── 7. SWITCH_NOW_6M ──────────────────────────────────────────────────────
+	{
+		segments, switches := pcNow.buildFixedRolling(6, etfOnSwitchNow, today)
+		results = append(results, pcNow.buildResult("switch_now_6m", "Switch now — 6-month rolling", segments, switches, etfOnSwitchNow))
+	}
+
+	// ── 8. SWITCH_AT_EXPIRY_3M_OR_4M ─────────────────────────────────────────
+	// At each decision point, pick the cheaper of 3-month and 4-month plans
+	// (compared by cost-per-period over the remaining window). Falls back to
+	// 1-month variable if neither is available.
+	{
+		var segments []planSegment
+		var switches []SwitchEvent
+
+		preferredTerms := []int{3, 4}
+
+		decisionDate := windowStartExpiry
+		for decisionDate.Before(pcExpiry.windowEnd) {
+			bestCostPerPeriod := math.MaxFloat64
+			var bestPlanRes *Plan
+			bestTermMonths := 1
+
+			for _, termMonths := range preferredTerms {
+				planRes := pcExpiry.selectBestPlan(termMonths, decisionDate)
+				if planRes == nil {
+					continue
+				}
+				totalCost, periodsCovered := pcExpiry.costForDateRange(*planRes, decisionDate, pcExpiry.windowEnd)
+				if periodsCovered <= 0 {
+					continue
+				}
+				costPerPeriod := totalCost / float64(periodsCovered)
+				if costPerPeriod < bestCostPerPeriod {
+					bestCostPerPeriod = costPerPeriod
+					bestPlanRes = planRes
+					bestTermMonths = termMonths
+				}
+			}
+
+			// Fallback to 1-month variable if no 3m/4m plan is available.
+			if bestPlanRes == nil {
+				bestPlanRes = pcExpiry.selectBestPlan(1, decisionDate)
+				bestTermMonths = 1
+			}
+			if bestPlanRes == nil {
+				break
+			}
+
+			nextDate := decisionDate.AddDate(0, bestTermMonths, 0)
+			segEnd := nextDate
+			if segEnd.After(pcExpiry.windowEnd) {
+				segEnd = pcExpiry.windowEnd
+			}
+			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *bestPlanRes})
+			switches = append(switches, SwitchEvent{
+				EffectivePeriod: pcExpiry.dateToPeriod(decisionDate),
+				ETFPaid:         0,
+				Plan:            *bestPlanRes,
+			})
+			decisionDate = nextDate
+		}
+		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m_or_4m", "Switch at expiry — best 3 or 4-month rolling", segments, switches, 0))
+	}
+
+	// ── 9. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
 	// At each decision point (starting from windowStartExpiry), pick the term
 	// that minimises projected cost-per-period for the remaining window.
 	{
