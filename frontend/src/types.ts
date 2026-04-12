@@ -39,8 +39,6 @@ export interface ChartPoint {
 }
 
 export interface ProjectionRequest {
-  current_rate_cents: number
-  current_base_fee: number
   etf_amount: number
   contract_expiration: string
 }

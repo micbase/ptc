@@ -24,8 +24,6 @@ type Plan struct {
 }
 
 type ProjectionRequest struct {
-	CurrentRateCents   float64 `json:"current_rate_cents"`
-	CurrentBaseFee     float64 `json:"current_base_fee"`
 	ETFAmount          float64 `json:"etf_amount"`
 	ContractExpiration string  `json:"contract_expiration"`
 }
@@ -122,7 +120,7 @@ type projectionContext struct {
 // Falls back to avgUsage when no historical data exists.
 func (pc *projectionContext) usageForPeriod(periodIdx int) (float64, bool) {
 	u, ok := pc.usageMap[periodIdx]
-	if !ok || u == 0 {
+	if !ok {
 		return pc.avgUsage, true
 	}
 	return u, pc.estimatedMap[periodIdx]
