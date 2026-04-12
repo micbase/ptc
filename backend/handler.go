@@ -132,24 +132,24 @@ func handleProjection(pool *pgxpool.Pool) http.HandlerFunc {
 
 func handleLatestSwitchEvent(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		record, found, err := queryLatestSwitchEvent(r.Context(), pool)
+		records, err := querySwitchEvents(r.Context(), pool, 1)
 		if err != nil {
 			log.Printf("latest switch event error: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if !found {
+		if len(records) == 0 {
 			json.NewEncoder(w).Encode(nil)
 			return
 		}
-		json.NewEncoder(w).Encode(record)
+		json.NewEncoder(w).Encode(records[0])
 	}
 }
 
 func handleSwitchEvents(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		records, err := querySwitchEvents(r.Context(), pool)
+		records, err := querySwitchEvents(r.Context(), pool, 0)
 		if err != nil {
 			log.Printf("switch events error: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
