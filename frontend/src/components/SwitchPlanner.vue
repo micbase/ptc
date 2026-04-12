@@ -42,6 +42,8 @@ const STRATEGY_COLORS: Record<string, string> = {
   switch_at_expiry_3m: '#f59e0b',
   switch_now_12m: '#10b981',
   switch_now_3m: '#f97316',
+  switch_now_6m: '#06b6d4',
+  switch_at_expiry_3m_or_4m: '#ec4899',
   optimal_greedy: '#ef4444',
 }
 

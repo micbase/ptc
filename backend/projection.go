@@ -337,6 +337,71 @@ func (pc *projectionContext) buildResult(id, name string, segments []planSegment
 	}
 }
 
+// buildGreedyRolling builds plan segments by picking the best term at each decision point.
+// termOptions: terms to evaluate (by cost-per-period over the remaining window).
+// fallbackTerm: used if no plan is found for any preferred term (0 = no fallback / stop).
+// initialETF: charged at the first switch only.
+func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm int, initialETF float64, firstDecisionDate time.Time) ([]planSegment, []SwitchEvent) {
+	var segments []planSegment
+	var switches []SwitchEvent
+	isFirst := true
+
+	decisionDate := pc.windowStart
+	for decisionDate.Before(pc.windowEnd) {
+		selectDate := decisionDate
+		etf := 0.0
+		if isFirst {
+			selectDate = firstDecisionDate
+			etf = initialETF
+			isFirst = false
+		}
+
+		bestCostPerPeriod := math.MaxFloat64
+		var bestPlanRes *Plan
+		bestTermMonths := 0
+
+		for _, termMonths := range termOptions {
+			planRes := pc.selectBestPlan(termMonths, selectDate)
+			if planRes == nil {
+				continue
+			}
+			totalCost, periodsCovered := pc.costForDateRange(*planRes, decisionDate, pc.windowEnd)
+			if periodsCovered <= 0 {
+				continue
+			}
+			costPerPeriod := totalCost / float64(periodsCovered)
+			if costPerPeriod < bestCostPerPeriod {
+				bestCostPerPeriod = costPerPeriod
+				bestPlanRes = planRes
+				bestTermMonths = termMonths
+			}
+		}
+
+		// Fallback if no preferred term is available.
+		if bestPlanRes == nil && fallbackTerm > 0 {
+			bestPlanRes = pc.selectBestPlan(fallbackTerm, selectDate)
+			bestTermMonths = fallbackTerm
+		}
+		if bestPlanRes == nil {
+			break
+		}
+
+		nextDate := decisionDate.AddDate(0, bestTermMonths, 0)
+		segEnd := nextDate
+		if segEnd.After(pc.windowEnd) {
+			segEnd = pc.windowEnd
+		}
+		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *bestPlanRes})
+		switches = append(switches, SwitchEvent{
+			EffectivePeriod: pc.dateToPeriod(decisionDate),
+			ETFPaid:         etf,
+			Plan:            *bestPlanRes,
+		})
+		decisionDate = nextDate
+	}
+	return segments, switches
+}
+
 // buildFixedRolling builds plan segments for a rolling fixed-term strategy starting at T = windowStart.
 // firstDecisionDate: the date used to select the first plan's rates.
 //   - "at expiry" strategies pass windowStart (use projected/historical rates).
@@ -534,59 +599,25 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		results = append(results, pcNow.buildResult("switch_now_3m", "Switch now — 3-month rolling", segments, switches, etfOnSwitchNow))
 	}
 
-	// ── 7. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
-	// At each decision point (starting from windowStartExpiry), pick the term
-	// that minimises projected cost-per-period for the remaining window.
+	// ── 7. SWITCH_NOW_6M ──────────────────────────────────────────────────────
 	{
-		var segments []planSegment
-		var switches []SwitchEvent
+		segments, switches := pcNow.buildFixedRolling(6, etfOnSwitchNow, today)
+		results = append(results, pcNow.buildResult("switch_now_6m", "Switch now — 6-month rolling", segments, switches, etfOnSwitchNow))
+	}
 
-		termOptions := []int{1, 3, 6, 12}
+	// ── 8. SWITCH_AT_EXPIRY_3M_OR_4M ─────────────────────────────────────────
+	// Pick the cheaper of 3-month and 4-month at each renewal; fallback to 1m.
+	{
+		segments, switches := pcExpiry.buildGreedyRolling([]int{3, 4}, 1, 0, windowStartExpiry)
+		results = append(results, pcExpiry.buildResult("switch_at_expiry_3m_or_4m", "Switch at expiry — best 3 or 4-month rolling", segments, switches, 0))
+	}
 
-		decisionDate := windowStartExpiry
-		for decisionDate.Before(pcExpiry.windowEnd) {
-			bestCostPerPeriod := math.MaxFloat64
-			var bestPlanRes *Plan
-			bestTermMonths := 1
-
-			for _, termMonths := range termOptions {
-				planRes := pcExpiry.selectBestPlan(termMonths, decisionDate)
-				if planRes == nil {
-					continue
-				}
-				// Evaluate each option over the full remaining window so that
-				// all terms are compared on the same horizon. Using only the
-				// term's own duration biases the comparison toward shorter
-				// terms: a 1-month variable plan only needs to beat a
-				// 12-month average to win, letting it dominate every period.
-				totalCost, periodsCovered := pcExpiry.costForDateRange(*planRes, decisionDate, pcExpiry.windowEnd)
-				if periodsCovered <= 0 {
-					continue
-				}
-				costPerPeriod := totalCost / float64(periodsCovered)
-				if costPerPeriod < bestCostPerPeriod {
-					bestCostPerPeriod = costPerPeriod
-					bestPlanRes = planRes
-					bestTermMonths = termMonths
-				}
-			}
-
-			if bestPlanRes == nil {
-				break
-			}
-			nextDate := decisionDate.AddDate(0, bestTermMonths, 0)
-			segEnd := nextDate
-			if segEnd.After(pcExpiry.windowEnd) {
-				segEnd = pcExpiry.windowEnd
-			}
-			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *bestPlanRes})
-			switches = append(switches, SwitchEvent{
-				EffectivePeriod: pcExpiry.dateToPeriod(decisionDate),
-				ETFPaid:         0,
-				Plan:            *bestPlanRes,
-			})
-			decisionDate = nextDate
-		}
+	// ── 9. OPTIMAL_GREEDY ─────────────────────────────────────────────────────
+	// At each decision point pick the term (1/3/6/12m) with the lowest
+	// cost-per-period over the remaining window. 1m is always available so no
+	// separate fallback is needed.
+	{
+		segments, switches := pcExpiry.buildGreedyRolling([]int{3, 4, 6, 12}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("optimal_greedy", "Optimal — greedy at each decision point", segments, switches, 0))
 	}
 
