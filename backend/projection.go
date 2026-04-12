@@ -9,18 +9,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// LinearPlan is a candidate plan that passed the 3-point linearity check.
-type LinearPlan struct {
-	IDKey      string
-	RepCompany string
-	Product    string
-	TermValue  int
-	RateType   string
-	BaseFee    float64 // $ per month (decomposed)
-	PerKwhRate float64 // ¢/kWh (decomposed)
-	Renewable  int
-	Rating     float64
-	EnrollURL  string
+// Plan is a candidate plan from the database, enriched with decomposed rates.
+// isActual is unexported: true when rates come from today's live plans, false for historical projections.
+type Plan struct {
+	RepCompany   string  `json:"rep_company"`
+	Product      string  `json:"product"`
+	TermValue    int     `json:"term_value"`
+	RateType     string  `json:"rate_type"`
+	BaseFee      float64 `json:"base_fee"`      // $ per month (decomposed)
+	PerKwhRate   float64 `json:"per_kwh_rate"`  // ¢/kWh (decomposed)
+	EnrollURL    string  `json:"enroll_url"`
+	isActual     bool    // not serialised; set by selectBestPlan
+	Kwh1000Cents float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
 }
 
 type ProjectionRequest struct {
@@ -30,24 +30,10 @@ type ProjectionRequest struct {
 	ContractExpiration string  `json:"contract_expiration"`
 }
 
-type ProjectionPlanInfo struct {
-	IDKey              string  `json:"id_key"`
-	RepCompany         string  `json:"rep_company"`
-	Product            string  `json:"product"`
-	TermValue          int     `json:"term_value"`
-	RateType           string  `json:"rate_type"`
-	ProjectedRateCents float64 `json:"projected_rate_cents"`
-	ProjectedBaseFee   float64 `json:"projected_base_fee"`
-	Kwh1000Cents       float64 `json:"kwh1000_cents"` // all-in ¢/kWh at 1000 kWh usage
-	Renewable          int     `json:"renewable"`
-	Rating             float64 `json:"rating"`
-	EnrollURL          string  `json:"enroll_url"`
-}
-
 type SwitchEvent struct {
-	EffectivePeriod string             `json:"effective_period"` // "T+N" period label
-	ETFPaid         float64            `json:"etf_paid"`
-	Plan            ProjectionPlanInfo `json:"plan"`
+	EffectivePeriod string  `json:"effective_period"` // "T+N" period label
+	ETFPaid         float64 `json:"etf_paid"`
+	Plan            Plan    `json:"plan"`
 }
 
 type PeriodBreakdown struct {
@@ -56,7 +42,7 @@ type PeriodBreakdown struct {
 	PeriodEnd        string  `json:"period_end"`        // "YYYY-MM-DD" (inclusive last day)
 	UsageKwh         float64 `json:"usage_kwh"`
 	UsageIsEstimated bool    `json:"usage_is_estimated"`
-	ActivePlanLabel  string  `json:"active_plan_label"`
+	ActivePlan       Plan    `json:"active_plan"`
 	RateCents        float64 `json:"rate_cents"`
 	BaseFee          float64 `json:"base_fee"`
 	PeriodCost       float64 `json:"period_cost"`
@@ -81,15 +67,7 @@ type StrategyResult struct {
 type planSegment struct {
 	start time.Time
 	end   time.Time
-	plan  ratePlan
-}
-
-// ratePlan holds the effective rates for a plan within a segment.
-type ratePlan struct {
-	label     string
-	rateCents float64
-	baseFee   float64
-	isActual  bool // true when rates come from today's live plans, not a historical projection
+	plan  Plan
 }
 
 // periodCoversSegment reports whether [segStart, segEnd) overlaps [periodStart, periodEnd).
@@ -123,11 +101,6 @@ func lowestConfidence(a, b string) string {
 	return b
 }
 
-type planResult struct {
-	plan ratePlan
-	info ProjectionPlanInfo
-}
-
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
@@ -135,8 +108,8 @@ func round2(v float64) float64 {
 // projectionContext holds the shared state used across the projection computation.
 type projectionContext struct {
 	today           time.Time
-	todayPlans      []LinearPlan          // plans for today, derived from allPlans[today]
-	historicalPlans map[string][]LinearPlan // all plans keyed by fetch date "YYYY-MM-DD"
+	todayPlans      []Plan
+	historicalPlans map[string][]Plan
 	usageMap        map[int]float64
 	estimatedMap    map[int]bool
 	avgUsage        float64
@@ -182,7 +155,7 @@ func (pc *projectionContext) bestHistoricalPlan(
 	termMonths int,
 	decisionDate time.Time,
 	numCoveredPeriods int, totalUsage float64,
-) *LinearPlan {
+) *Plan {
 	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
 
 	var histStart, histEnd time.Time
@@ -199,9 +172,9 @@ func (pc *projectionContext) bestHistoricalPlan(
 		return nil
 	}
 
-	searchRange := func(start, end time.Time) *LinearPlan {
+	searchRange := func(start, end time.Time) *Plan {
 		bestCost := math.MaxFloat64
-		var best *LinearPlan
+		var best *Plan
 		for dateStr, candidates := range pc.historicalPlans {
 			fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
 			if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
@@ -247,46 +220,15 @@ func (pc *projectionContext) bestHistoricalPlan(
 	return searchRange(latestDate, latestDate)
 }
 
-// planLabel builds a display label for a plan. Projected plans get a "(projected)" suffix.
-func planLabel(plan *LinearPlan, isActual bool) string {
-	var termLabel string
-	if plan.TermValue == 1 {
-		termLabel = "Variable"
-	} else {
-		termLabel = fmt.Sprintf("%dm Fixed", plan.TermValue)
-	}
-	if isActual {
-		return fmt.Sprintf("%s – %s (%s)", plan.RepCompany, plan.Product, termLabel)
-	}
-	return fmt.Sprintf("%s – %s (%s, projected)", plan.RepCompany, plan.Product, termLabel)
-}
-
-// planInfo builds a ProjectionPlanInfo from a LinearPlan's metadata and its
-// effective (possibly projected) rates. Kwh1000Cents is the all-in ¢/kWh at
-// 1000 kWh usage: (baseFee($) + 10·rateCents(¢/kWh)) / 10.
-func planInfo(plan *LinearPlan, rateCents, baseFee float64) ProjectionPlanInfo {
-	return ProjectionPlanInfo{
-		IDKey:              plan.IDKey,
-		RepCompany:         plan.RepCompany,
-		Product:            plan.Product,
-		TermValue:          plan.TermValue,
-		RateType:           plan.RateType,
-		ProjectedRateCents: rateCents,
-		ProjectedBaseFee:   baseFee,
-		Kwh1000Cents:       (baseFee + 10*rateCents) / 10,
-		Renewable:          plan.Renewable,
-		Rating:             plan.Rating,
-		EnrollURL:          plan.EnrollURL,
-	}
-}
-
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
 // termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 //
 // Within the 30-day enrollment window (today >= decisionDate−30d), today's live
 // plans are considered first. Historical plans are always checked and override if
 // cheaper. Returns nil if no data exists from either source.
-func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *planResult {
+//
+// The returned Plan copy has isActual set appropriately.
+func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *Plan {
 	termEnd := decisionDate.AddDate(0, termMonths, 0)
 
 	termUsage, numTermPeriods := 0.0, 0
@@ -303,7 +245,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	}
 
 	bestCost := math.MaxFloat64
-	var bestPlan *LinearPlan
+	var bestPlan *Plan
 	isActual := false
 
 	// Phase 1: live plans — only within the 30-day enrollment window.
@@ -336,16 +278,10 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		return nil
 	}
 
-	// Phase 3: assemble result from winning source.
-	return &planResult{
-		plan: ratePlan{
-			label:     planLabel(bestPlan, isActual),
-			rateCents: bestPlan.PerKwhRate,
-			baseFee:   bestPlan.BaseFee,
-			isActual:  isActual,
-		},
-		info: planInfo(bestPlan, bestPlan.PerKwhRate, bestPlan.BaseFee),
-	}
+	// Phase 3: return a copy with isActual stamped in.
+	result := *bestPlan
+	result.isActual = isActual
+	return &result
 }
 
 // buildBreakdown computes per-period costs for the given plan segments.
@@ -360,7 +296,7 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 		periodEnd := pc.periodStarts[i+1]
 		usageKwh, isEstimated := pc.usageForPeriod(i)
 
-		var segPlan ratePlan
+		var segPlan Plan
 		for _, seg := range segments {
 			if !periodCoversSegment(periodStart, periodEnd, seg.start, seg.end) {
 				continue
@@ -369,7 +305,7 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 			break // each period is covered by exactly one segment
 		}
 
-		cost := segPlan.baseFee + usageKwh*segPlan.rateCents/100.0
+		cost := segPlan.BaseFee + usageKwh*segPlan.PerKwhRate/100.0
 		total += cost
 		// period_end is shown as the last day (inclusive) = periodEnd - 1 day
 		lastDay := periodEnd.AddDate(0, 0, -1)
@@ -379,9 +315,9 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 			PeriodEnd:        lastDay.Format("2006-01-02"),
 			UsageKwh:         round2(usageKwh),
 			UsageIsEstimated: isEstimated,
-			ActivePlanLabel:  segPlan.label,
-			RateCents:        round2(segPlan.rateCents),
-			BaseFee:          round2(segPlan.baseFee),
+			ActivePlan:       segPlan,
+			RateCents:        round2(segPlan.PerKwhRate),
+			BaseFee:          round2(segPlan.BaseFee),
 			PeriodCost:       round2(cost),
 			Confidence:       periodConfidence(periodStart, pc.today),
 			IsProjected:      !segPlan.isActual,
@@ -447,20 +383,20 @@ func (pc *projectionContext) buildFixedRolling(termMonths int, initialETF float6
 		if segEnd.After(pc.windowEnd) {
 			segEnd = pc.windowEnd
 		}
-		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: planRes.plan})
+		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *planRes})
 		switches = append(switches, SwitchEvent{
 			EffectivePeriod: pc.dateToPeriod(decisionDate),
 			ETFPaid:         etf,
-			Plan:            planRes.info,
+			Plan:            *planRes,
 		})
 		decisionDate = decisionDate.AddDate(0, actualTerm, 0)
 	}
 	return segments, switches
 }
 
-// costForDateRange sums the projected cost for the given ratePlan over all
+// costForDateRange sums the projected cost for the given Plan over all
 // periods that fall within [startDate, endDate). Returns (totalCost, periodsCovered).
-func (pc *projectionContext) costForDateRange(plan ratePlan, startDate, endDate time.Time) (float64, int) {
+func (pc *projectionContext) costForDateRange(plan Plan, startDate, endDate time.Time) (float64, int) {
 	totalCost := 0.0
 	periodsCovered := 0
 	for i := 0; i < pc.numPeriods; i++ {
@@ -470,7 +406,7 @@ func (pc *projectionContext) costForDateRange(plan ratePlan, startDate, endDate 
 			continue
 		}
 		usageKwh, _ := pc.usageForPeriod(i)
-		totalCost += plan.baseFee + usageKwh*plan.rateCents/100.0
+		totalCost += plan.BaseFee + usageKwh*plan.PerKwhRate/100.0
 		periodsCovered++
 	}
 	return totalCost, periodsCovered
@@ -483,8 +419,8 @@ func newProjectionContext(
 	pool *pgxpool.Pool,
 	today time.Time,
 	windowStart time.Time,
-	todayPlans []LinearPlan,
-	historicalPlans map[string][]LinearPlan,
+	todayPlans []Plan,
+	historicalPlans map[string][]Plan,
 ) (*projectionContext, error) {
 	const numPeriods = 12
 
@@ -629,7 +565,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 		decisionDate := windowStartExpiry
 		for decisionDate.Before(pcExpiry.windowEnd) {
 			bestCostPerPeriod := math.MaxFloat64
-			var bestPlanRes *planResult
+			var bestPlanRes *Plan
 			bestTermMonths := 1
 
 			for _, termMonths := range termOptions {
@@ -642,7 +578,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 				// term's own duration biases the comparison toward shorter
 				// terms: a 1-month variable plan only needs to beat a
 				// 12-month average to win, letting it dominate every period.
-				totalCost, periodsCovered := pcExpiry.costForDateRange(planRes.plan, decisionDate, pcExpiry.windowEnd)
+				totalCost, periodsCovered := pcExpiry.costForDateRange(*planRes, decisionDate, pcExpiry.windowEnd)
 				if periodsCovered <= 0 {
 					continue
 				}
@@ -662,11 +598,11 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 			if segEnd.After(pcExpiry.windowEnd) {
 				segEnd = pcExpiry.windowEnd
 			}
-			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: bestPlanRes.plan})
+			segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *bestPlanRes})
 			switches = append(switches, SwitchEvent{
 				EffectivePeriod: pcExpiry.dateToPeriod(decisionDate),
 				ETFPaid:         0,
-				Plan:            bestPlanRes.info,
+				Plan:            *bestPlanRes,
 			})
 			decisionDate = nextDate
 		}

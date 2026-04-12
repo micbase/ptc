@@ -129,7 +129,7 @@ const periodCostOptions = computed<ChartOptions<'line'>>(() => ({
           const lbl = periodLabels.value[ctx.dataIndex]
           const sw = s?.switches.find((sw) => sw.effective_period === lbl)
           if (!sw) return ''
-          const parts: string[] = [`  ↳ Switch to ${sw.plan.rep_company} @ ${sw.plan.projected_rate_cents.toFixed(2)}¢/kWh`]
+          const parts: string[] = [`  ↳ Switch to ${sw.plan.rep_company} @ ${sw.plan.per_kwh_rate.toFixed(2)}¢/kWh`]
           if (sw.etf_paid > 0) parts.push(`  ⚠ ETF: $${sw.etf_paid.toFixed(2)}`)
           return parts.join('\n')
         },
@@ -496,7 +496,10 @@ function sortIcon(key: keyof StrategyResult): string {
                   {{ pb.usage_kwh.toFixed(0) }}
                   <span v-if="pb.usage_is_estimated" class="text-gray-400 text-xs">~</span>
                 </td>
-                <td class="px-3 py-2 text-gray-600 max-w-xs truncate">{{ pb.active_plan_label }}</td>
+                <td class="px-3 py-2 text-gray-600 max-w-xs">
+                  {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
+                  <span class="text-gray-400 text-xs">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
+                </td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">
                   {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400 text-xs" title="Projected from historical data">~</span>
                 </td>

@@ -45,23 +45,21 @@ export interface ProjectionRequest {
   contract_expiration: string
 }
 
-export interface ProjectionPlanInfo {
-  id_key: string
+export interface Plan {
   rep_company: string
   product: string
   term_value: number
   rate_type: string
-  projected_rate_cents: number
-  projected_base_fee: number
-  renewable: number
-  rating: number
+  base_fee: number      // $ per month (decomposed)
+  per_kwh_rate: number  // ¢/kWh (decomposed)
   enroll_url: string
+  kwh1000_cents: number // ¢/kWh all-in at 1000 kWh
 }
 
 export interface SwitchEvent {
   effective_period: string
   etf_paid: number
-  plan: ProjectionPlanInfo
+  plan: Plan
 }
 
 export interface PeriodBreakdown {
@@ -70,7 +68,7 @@ export interface PeriodBreakdown {
   period_end: string    // "YYYY-MM-DD" (inclusive last day)
   usage_kwh: number
   usage_is_estimated: boolean
-  active_plan_label: string
+  active_plan: Plan
   rate_cents: number
   base_fee: number
   period_cost: number
