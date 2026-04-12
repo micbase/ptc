@@ -188,7 +188,7 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 			COALESCE(er.term_value, 0),
 			COALESCE(er.rate_type, ''),
 			COALESCE(er.kwh1000::float8, 0),
-			COALESCE(er.enroll_url, ''),
+			COALESCE(er.cancel_fee, ''),
 			er.fetch_date::text
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
@@ -206,7 +206,7 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 		if err := rows.Scan(
 			&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
 			&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
-			&r.RateType, &r.Kwh1000, &r.EnrollURL, &r.FetchDate,
+			&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
 		); err != nil {
 			return nil, err
 		}
@@ -241,7 +241,7 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 			COALESCE(er.term_value, 0),
 			COALESCE(er.rate_type, ''),
 			COALESCE(er.kwh1000::float8, 0),
-			COALESCE(er.enroll_url, ''),
+			COALESCE(er.cancel_fee, ''),
 			er.fetch_date::text
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
@@ -249,7 +249,7 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 	).Scan(
 		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
 		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
-		&r.RateType, &r.Kwh1000, &r.EnrollURL, &r.FetchDate,
+		&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
 	)
 	return r, err
 }

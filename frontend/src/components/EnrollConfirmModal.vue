@@ -12,8 +12,8 @@ const props = defineProps<{
   kwh1000Cents: number
   enrollUrl: string
   // Pre-suggested dates (can be overridden by user)
-  suggestedSwitchDate: string
-  suggestedExpirationDate: string
+  suggestedSwitchDate?: string
+  suggestedExpirationDate?: string
 }>()
 
 const emit = defineEmits<{
@@ -27,13 +27,25 @@ const notes = ref('')
 const saving = ref(false)
 const error = ref('')
 
+function computeExpiration(from: string): string {
+  if (!from || !props.termValue || props.termValue <= 1) return ''
+  const d = new Date(from)
+  d.setMonth(d.getMonth() + props.termValue)
+  return d.toISOString().slice(0, 10)
+}
+
 watch(() => props.show, (val) => {
   if (val) {
-    switchDate.value = props.suggestedSwitchDate
-    expirationDate.value = props.suggestedExpirationDate
+    const today = new Date().toISOString().slice(0, 10)
+    switchDate.value = props.suggestedSwitchDate || today
+    expirationDate.value = props.suggestedExpirationDate || computeExpiration(switchDate.value)
     notes.value = ''
     error.value = ''
   }
+}, { immediate: true })
+
+watch(switchDate, (val) => {
+  expirationDate.value = computeExpiration(val)
 })
 
 async function onConfirm() {

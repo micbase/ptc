@@ -149,13 +149,13 @@ function formatDate(s: string) {
           <thead>
             <tr class="bg-gray-50 text-gray-600 text-xs uppercase">
               <th class="text-left px-4 py-3 font-medium">Switch Date</th>
+              <th class="text-left px-4 py-3 font-medium">Contract Expires</th>
               <th class="text-left px-4 py-3 font-medium">Provider</th>
               <th class="text-left px-4 py-3 font-medium">Plan</th>
               <th class="text-center px-4 py-3 font-medium">Term</th>
               <th class="text-right px-4 py-3 font-medium">¢/kWh@1000</th>
-              <th class="text-left px-4 py-3 font-medium">Contract Expires</th>
+              <th class="text-left px-4 py-3 font-medium">ETF</th>
               <th class="text-left px-4 py-3 font-medium">Notes</th>
-              <th class="text-left px-4 py-3 font-medium">Enroll URL</th>
             </tr>
           </thead>
           <tbody>
@@ -165,24 +165,15 @@ function formatDate(s: string) {
               class="border-t border-gray-100 hover:bg-gray-50"
             >
               <td class="px-4 py-3 tabular-nums whitespace-nowrap text-gray-700">{{ formatDate(r.switch_date) }}</td>
+              <td class="px-4 py-3 tabular-nums whitespace-nowrap text-gray-700">{{ formatDate(r.contract_expiration_date) }}</td>
               <td class="px-4 py-3 text-gray-800 font-medium">{{ r.rep_company }}</td>
               <td class="px-4 py-3 text-gray-600 max-w-xs truncate">{{ r.product }}</td>
               <td class="px-4 py-3 text-center text-gray-600 whitespace-nowrap">
                 {{ r.term_value === 1 ? 'Variable' : `${r.term_value}m Fixed` }}
               </td>
               <td class="px-4 py-3 text-right tabular-nums text-gray-700">{{ (r.kwh1000 * 100).toFixed(2) }}</td>
-              <td class="px-4 py-3 tabular-nums whitespace-nowrap text-gray-700">{{ formatDate(r.contract_expiration_date) }}</td>
+              <td class="px-4 py-3 text-gray-600 text-xs whitespace-nowrap">{{ r.cancel_fee || '—' }}</td>
               <td class="px-4 py-3 text-gray-500 text-xs max-w-xs truncate">{{ r.notes || '—' }}</td>
-              <td class="px-4 py-3">
-                <a
-                  v-if="r.enroll_url"
-                  :href="r.enroll_url"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-blue-600 hover:underline text-xs"
-                >Enroll</a>
-                <span v-else class="text-gray-400 text-xs">—</span>
-              </td>
             </tr>
           </tbody>
         </table>
