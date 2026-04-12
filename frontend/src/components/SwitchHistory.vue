@@ -87,8 +87,12 @@ const filteredPlans = () => {
 
 function selectPlan(plan: ElectricityRate) {
   selectedPlan.value = plan
-  // Auto-suggest expiration date based on term
-  if (plan.term_value && plan.term_value > 1 && switchDate.value) {
+  recalcExpiration()
+}
+
+function recalcExpiration() {
+  const plan = selectedPlan.value
+  if (plan && plan.term_value && plan.term_value > 1 && switchDate.value) {
     const d = new Date(switchDate.value)
     d.setMonth(d.getMonth() + plan.term_value)
     expirationDate.value = d.toISOString().slice(0, 10)
@@ -238,6 +242,7 @@ function formatDate(s: string) {
                   v-model="switchDate"
                   type="date"
                   required
+                  @change="recalcExpiration"
                   class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
               </div>
