@@ -290,8 +290,18 @@ func queryPeriodUsage(ctx context.Context, pool *pgxpool.Pool, histPeriodStarts 
 	if len(histPeriodStarts) == 0 {
 		return map[int]float64{}, map[int]bool{}, nil
 	}
+	// histPeriodStarts may be non-monotonic when different periods have been
+	// shifted back different numbers of years, so compute true min/max.
 	overallStart := histPeriodStarts[0]
-	overallEnd := histPeriodStarts[len(histPeriodStarts)-1].AddDate(0, 1, 0)
+	overallEnd := histPeriodStarts[0].AddDate(0, 1, 0)
+	for _, ps := range histPeriodStarts[1:] {
+		if ps.Before(overallStart) {
+			overallStart = ps
+		}
+		if pe := ps.AddDate(0, 1, 0); pe.After(overallEnd) {
+			overallEnd = pe
+		}
+	}
 
 	query := `
 		SELECT interval_start, consumption_kwh::float8, is_actual
