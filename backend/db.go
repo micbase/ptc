@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -193,12 +192,17 @@ func decomposeRate(kwh500, kwh1000, kwh2000 float64) (baseFee, perKwhRate float6
 	return bf, rateABdol * 100
 }
 
-func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord, error) {
-	rows, err := pool.Query(ctx, `
-		SELECT `+switchEventSelectCols+`
+// querySwitchEvents returns switch events ordered by switch_date DESC.
+// Pass limit=1 to get only the most recent; limit=0 returns all.
+func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]SwitchRecord, error) {
+	q := `SELECT ` + switchEventSelectCols + `
 		FROM switch_events se
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
-		ORDER BY se.switch_date DESC, se.created_at DESC`)
+		ORDER BY se.switch_date DESC, se.created_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := pool.Query(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -206,17 +210,10 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord,
 
 	records := make([]SwitchRecord, 0)
 	for rows.Next() {
-		var r SwitchRecord
-		var kwh500, kwh2000 float64
-		if err := rows.Scan(
-			&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
-			&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
-			&r.RateType, &r.Kwh1000, &r.CancelFee, &r.FetchDate,
-			&kwh500, &kwh2000,
-		); err != nil {
+		r, err := scanSwitchRecord(rows)
+		if err != nil {
 			return nil, err
 		}
-		r.BaseFee, r.PerKwhRate = decomposeRate(kwh500, r.Kwh1000, kwh2000)
 		records = append(records, r)
 	}
 	return records, rows.Err()
@@ -276,22 +273,6 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 	return scanSwitchRecord(row)
 }
 
-func queryLatestSwitchEvent(ctx context.Context, pool *pgxpool.Pool) (SwitchRecord, bool, error) {
-	row := pool.QueryRow(ctx, `
-		SELECT `+switchEventSelectCols+`
-		FROM switch_events se
-		JOIN electricity_rates er ON er.id = se.electricity_rate_id
-		ORDER BY se.switch_date DESC, se.created_at DESC
-		LIMIT 1`)
-	r, err := scanSwitchRecord(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return SwitchRecord{}, false, nil
-	}
-	if err != nil {
-		return SwitchRecord{}, false, err
-	}
-	return r, true, nil
-}
 
 func absf(x float64) float64 {
 	if x < 0 {
