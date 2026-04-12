@@ -18,8 +18,6 @@ import type { StrategyResult, PeriodBreakdown, ProjectionRequest } from '../type
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
 
 // ── Form state ────────────────────────────────────────────────────────────────
-const currentRateCents = ref<number | ''>('')
-const currentBaseFee = ref<number | ''>('')
 const etfAmount = ref<number | ''>(0)
 const contractExpiration = ref('')
 
@@ -157,7 +155,7 @@ const cumulativeCostData = computed<ChartData<'line'>>(() => {
     })
 
     return {
-      label: `${s.strategy_name} ($${s.total_cost.toFixed(0)})`,
+      label: `${s.strategy_name} ($${(s.total_cost + s.etf_paid).toFixed(0)})`,
       data: cumData,
       borderColor: color,
       backgroundColor: color,
@@ -205,9 +203,12 @@ const cumulativeCostOptions = computed<ChartOptions<'line'>>(() => ({
 const sortedStrategies = computed(() => {
   const list = [...strategies.value]
   list.sort((a, b) => {
-    const av = a[sortKey.value] as number
-    const bv = b[sortKey.value] as number
-    return sortAsc.value ? (av as any) - (bv as any) : (bv as any) - (av as any)
+    const av = a[sortKey.value]
+    const bv = b[sortKey.value]
+    if (typeof av === 'string' && typeof bv === 'string') {
+      return sortAsc.value ? av.localeCompare(bv) : bv.localeCompare(av)
+    }
+    return sortAsc.value ? (av as number) - (bv as number) : (bv as number) - (av as number)
   })
   return list
 })
@@ -241,8 +242,6 @@ async function onSubmit() {
   selectedStrategyId.value = null
 
   const req: ProjectionRequest = {
-    current_rate_cents: Number(currentRateCents.value),
-    current_base_fee: Number(currentBaseFee.value),
     etf_amount: Number(etfAmount.value) || 0,
     contract_expiration: contractExpiration.value,
   }
@@ -274,34 +273,6 @@ function sortIcon(key: keyof StrategyResult): string {
     <div class="bg-white rounded-lg shadow p-5 mb-6">
       <h2 class="text-base font-semibold text-gray-700 mb-4">Your Current Plan</h2>
       <form @submit.prevent="onSubmit" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">
-            Current Rate (¢/kWh)
-          </label>
-          <input
-            v-model="currentRateCents"
-            type="number"
-            step="0.01"
-            min="0"
-            required
-            placeholder="e.g. 10.5"
-            class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">
-            Monthly Base Fee ($)
-          </label>
-          <input
-            v-model="currentBaseFee"
-            type="number"
-            step="0.01"
-            min="0"
-            required
-            placeholder="e.g. 9.95"
-            class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
         <div>
           <label class="block text-xs font-medium text-gray-600 mb-1">
             Early Termination Fee ($)

@@ -115,10 +115,6 @@ func handleProjection(pool *pgxpool.Pool) http.HandlerFunc {
 			http.Error(w, "contract_expiration is required", http.StatusBadRequest)
 			return
 		}
-		if req.CurrentRateCents <= 0 {
-			http.Error(w, "current_rate_cents must be positive", http.StatusBadRequest)
-			return
-		}
 
 		now := time.Now()
 		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)

@@ -146,7 +146,7 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 		// 3-point linearity check
 		rateABdol := (1000*kwh1000 - 500*kwh500) / 500   // $/kWh, 500→1000
 		rateBCdol := (2000*kwh2000 - 1000*kwh1000) / 1000 // $/kWh, 1000→2000
-		if rateABdol == 0 {
+		if absf(rateABdol) < 1e-9 {
 			continue
 		}
 		if absf(rateABdol-rateBCdol)/absf(rateABdol) > 0.15 {
