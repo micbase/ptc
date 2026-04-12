@@ -310,9 +310,6 @@ async function onSubmit() {
   }
 }
 
-const confidenceClass = (c: string) =>
-  c === 'high' ? 'text-green-700' : c === 'medium' ? 'text-yellow-700' : 'text-red-600'
-
 function sortIcon(key: keyof StrategyResult): string {
   if (sortKey.value !== key) return '↕'
   return sortAsc.value ? '↑' : '↓'
@@ -449,9 +446,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                 <th class="text-right px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('switch_count')">
                   # Switches {{ sortIcon('switch_count') }}
                 </th>
-                <th class="text-center px-4 py-3 font-medium cursor-pointer whitespace-nowrap" @click="setSort('confidence')">
-                  Confidence {{ sortIcon('confidence') }}
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -499,16 +493,11 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     </span>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-600">{{ s.switch_count }}</td>
-                  <td class="px-4 py-3 text-center">
-                    <span :class="['text-xs font-medium capitalize', confidenceClass(s.confidence)]">
-                      {{ s.confidence }}
-                    </span>
-                  </td>
                 </tr>
 
                 <!-- Inline period breakdown (expands below selected row) -->
                 <tr v-if="s.strategy_id === selectedStrategyId" :key="s.strategy_id + '-breakdown'">
-                  <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
+                  <td colspan="6" class="p-0 bg-blue-50 border-t border-blue-200">
                     <div class="overflow-x-auto">
                       <table class="w-full text-xs">
                         <thead>
@@ -521,7 +510,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                             <th class="text-right px-3 py-2 font-medium">Rate (¢)</th>
                             <th class="text-right px-3 py-2 font-medium">Base Fee</th>
                             <th class="text-right px-3 py-2 font-medium">Cost</th>
-                            <th class="text-center px-3 py-2 font-medium">Confidence</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -551,9 +539,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                             </td>
                             <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
                             <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>
-                            <td class="px-3 py-2 text-center">
-                              <span :class="['font-medium capitalize', confidenceClass(pb.confidence)]">{{ pb.confidence }}</span>
-                            </td>
                           </tr>
                         </tbody>
                       </table>

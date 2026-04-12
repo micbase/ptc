@@ -55,7 +55,6 @@ type PeriodBreakdown struct {
 	RateCents        float64 `json:"rate_cents"`
 	BaseFee          float64 `json:"base_fee"`
 	PeriodCost       float64 `json:"period_cost"`
-	Confidence       string  `json:"confidence"`
 	IsProjected      bool    `json:"is_projected"` // true when rates are a historical estimate, not today's live rates
 }
 
@@ -67,7 +66,6 @@ type StrategyResult struct {
 	ETFPaid                float64           `json:"etf_paid"`
 	NetSavings             float64           `json:"net_savings"`
 	SwitchCount            int               `json:"switch_count"`
-	Confidence             string            `json:"confidence"`
 	Switches               []SwitchEvent     `json:"switches"`
 	PeriodBreakdown        []PeriodBreakdown `json:"period_breakdown"`
 }
@@ -89,25 +87,6 @@ func periodCoversSegment(periodStart, periodEnd, segStart, segEnd time.Time) boo
 // periodLabel returns the T+N label for period index i (1-based).
 func periodLabel(i int) string {
 	return fmt.Sprintf("T+%d", i+1)
-}
-
-// periodConfidence returns confidence based on how far periodStart is from today.
-func periodConfidence(periodStart, today time.Time) string {
-	monthsAhead := (periodStart.Year()-today.Year())*12 + int(periodStart.Month()) - int(today.Month())
-	if monthsAhead < 2 {
-		return "high"
-	} else if monthsAhead < 6 {
-		return "medium"
-	}
-	return "low"
-}
-
-func lowestConfidence(a, b string) string {
-	order := map[string]int{"high": 2, "medium": 1, "low": 0}
-	if order[a] < order[b] {
-		return a
-	}
-	return b
 }
 
 func round2(v float64) float64 {
@@ -313,7 +292,6 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 			RateCents:        round2(segPlan.PerKwhRate),
 			BaseFee:          round2(segPlan.BaseFee),
 			PeriodCost:       round2(cost),
-			Confidence:       periodConfidence(periodStart, pc.today),
 			IsProjected:      !segPlan.isActual,
 		}
 	}
@@ -323,14 +301,6 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 // buildResult assembles a StrategyResult from segments and switches.
 func (pc *projectionContext) buildResult(id, name string, segments []planSegment, switches []SwitchEvent, etfPaid float64) StrategyResult {
 	breakdown, total := pc.buildBreakdown(segments)
-	confidence := "high"
-	for _, switchEvt := range switches {
-		for i := 0; i < pc.numPeriods; i++ {
-			if periodLabel(i) == switchEvt.EffectivePeriod {
-				confidence = lowestConfidence(confidence, periodConfidence(pc.periodStarts[i], pc.today))
-			}
-		}
-	}
 	if switches == nil {
 		switches = []SwitchEvent{}
 	}
@@ -340,7 +310,6 @@ func (pc *projectionContext) buildResult(id, name string, segments []planSegment
 		TotalCost:       round2(total),
 		ETFPaid:         etfPaid,
 		SwitchCount:     len(switches),
-		Confidence:      confidence,
 		Switches:        switches,
 		PeriodBreakdown: breakdown,
 	}
