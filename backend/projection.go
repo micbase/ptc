@@ -107,9 +107,8 @@ func round2(v float64) float64 {
 
 // projectionContext holds the shared state used across the projection computation.
 type projectionContext struct {
-	today           time.Time
-	todayPlans      []Plan
-	historicalPlans map[string][]Plan
+	today   time.Time
+	allPlans map[string][]Plan
 	usageMap        map[int]float64
 	estimatedMap    map[int]bool
 	avgUsage        float64
@@ -149,7 +148,7 @@ func (pc *projectionContext) bestPlanInRange(
 ) *Plan {
 	bestCost := math.MaxFloat64
 	var best *Plan
-	for dateStr, candidates := range pc.historicalPlans {
+	for dateStr, candidates := range pc.allPlans {
 		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
 		if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
 			continue
@@ -234,7 +233,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			// Fallback: no data in ideal window — use the most recent date that has
 			// at least one plan with a matching term.
 			var latestDate time.Time
-			for dateStr, candidates := range pc.historicalPlans {
+			for dateStr, candidates := range pc.allPlans {
 				fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
 				if parseErr != nil {
 					continue
@@ -399,14 +398,13 @@ func (pc *projectionContext) costForDateRange(plan Plan, startDate, endDate time
 }
 
 // newProjectionContext builds a projectionContext anchored at the given windowStart.
-// todayPlans and historicalPlans are pre-fetched and shared across contexts.
+// allPlans is pre-fetched and shared across contexts.
 func newProjectionContext(
 	ctx context.Context,
 	pool *pgxpool.Pool,
 	today time.Time,
 	windowStart time.Time,
-	todayPlans []Plan,
-	historicalPlans map[string][]Plan,
+	allPlans map[string][]Plan,
 ) (*projectionContext, error) {
 	const numPeriods = 12
 
@@ -441,10 +439,9 @@ func newProjectionContext(
 	}
 
 	return &projectionContext{
-		today:           today,
-		todayPlans:      todayPlans,
-		historicalPlans: historicalPlans,
-		usageMap:        usageMap,
+		today:    today,
+		allPlans: allPlans,
+		usageMap: usageMap,
 		estimatedMap:    estimatedMap,
 		avgUsage:        avgUsage,
 		numPeriods:      numPeriods,
@@ -472,21 +469,19 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// windowStartNow is used by "switch now" strategies: the window begins today.
 	windowStartNow := today
 
-	// Fetch all plans (all dates) in one query. Today's plans are extracted by date key.
+	// Fetch all plans (all dates) in one query.
 	allPlans, err := queryAllDecomposedPlans(ctx, pool)
 	if err != nil {
 		return nil, fmt.Errorf("queryAllDecomposedPlans: %w", err)
 	}
-	todayPlans := allPlans[today.Format("2006-01-02")]
-	historicalPlans := allPlans
 
 	// Build one context per window-start: period boundaries, usage lookups, and
 	// average-usage fallbacks all depend on where the window begins.
-	pcExpiry, err := newProjectionContext(ctx, pool, today, windowStartExpiry, todayPlans, historicalPlans)
+	pcExpiry, err := newProjectionContext(ctx, pool, today, windowStartExpiry, allPlans)
 	if err != nil {
 		return nil, err
 	}
-	pcNow, err := newProjectionContext(ctx, pool, today, windowStartNow, todayPlans, historicalPlans)
+	pcNow, err := newProjectionContext(ctx, pool, today, windowStartNow, allPlans)
 	if err != nil {
 		return nil, err
 	}
