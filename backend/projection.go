@@ -617,7 +617,7 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	// cost-per-period over the remaining window. 1m is always available so no
 	// separate fallback is needed.
 	{
-		segments, switches := pcExpiry.buildGreedyRolling([]int{1, 3, 6, 12}, 0, 0, windowStartExpiry)
+		segments, switches := pcExpiry.buildGreedyRolling([]int{3, 4, 6, 12}, 1, 0, windowStartExpiry)
 		results = append(results, pcExpiry.buildResult("optimal_greedy", "Optimal — greedy at each decision point", segments, switches, 0))
 	}
 
