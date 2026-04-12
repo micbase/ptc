@@ -450,6 +450,7 @@ function sortIcon(key: keyof StrategyResult): string {
                 <th class="text-left px-3 py-2 font-medium">Date Range</th>
                 <th class="text-right px-3 py-2 font-medium">Usage (kWh)</th>
                 <th class="text-left px-3 py-2 font-medium">Plan</th>
+                <th class="text-right px-3 py-2 font-medium">¢/kWh@1000</th>
                 <th class="text-right px-3 py-2 font-medium">Rate (¢)</th>
                 <th class="text-right px-3 py-2 font-medium">Base Fee</th>
                 <th class="text-right px-3 py-2 font-medium">Cost</th>
@@ -472,6 +473,7 @@ function sortIcon(key: keyof StrategyResult): string {
                   {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
                   <span class="text-gray-400 text-xs">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
                 </td>
+                <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.active_plan.kwh1000_cents.toFixed(2) }}</td>
                 <td class="px-3 py-2 text-right tabular-nums text-gray-700">
                   {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400 text-xs" title="Projected from historical data">~</span>
                 </td>
