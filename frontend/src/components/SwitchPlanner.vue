@@ -60,8 +60,7 @@ onMounted(async () => {
     if (latest) {
       loadedFrom.value = latest
       contractExpiration.value = latest.contract_expiration_date
-      // Prefer explicitly recorded etf_text; fall back to plan's cancel_fee.
-      etfText.value = latest.etf_text || latest.cancel_fee || ''
+      etfText.value = latest.cancel_fee || ''
     }
   } catch {
     // silently ignore — user can fill manually

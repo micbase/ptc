@@ -45,7 +45,6 @@ type SwitchRecord struct {
 	ElectricityRateID      int     `json:"electricity_rate_id"`
 	SwitchDate             string  `json:"switch_date"`
 	ContractExpirationDate string  `json:"contract_expiration_date"`
-	ETFText                string  `json:"etf_text"`
 	Notes                  string  `json:"notes"`
 	CreatedAt              string  `json:"created_at"`
 	// Joined from electricity_rates
@@ -62,6 +61,5 @@ type AddSwitchEventRequest struct {
 	ElectricityRateID      int    `json:"electricity_rate_id"`
 	SwitchDate             string `json:"switch_date"`
 	ContractExpirationDate string `json:"contract_expiration_date"`
-	ETFText                string `json:"etf_text"`
 	Notes                  string `json:"notes"`
 }
