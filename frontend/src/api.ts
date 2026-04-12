@@ -1,4 +1,4 @@
-import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategyResult } from './types'
+import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategyResult, SwitchRecord, AddSwitchEventRequest } from './types'
 
 const BASE = '/api'
 
@@ -29,6 +29,22 @@ export async function triggerFetch(): Promise<{ upserted: number; message: strin
 
 export async function fetchProjection(req: ProjectionRequest): Promise<StrategyResult[]> {
   const res = await fetch(`${BASE}/projection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function fetchSwitchEvents(): Promise<SwitchRecord[]> {
+  const res = await fetch(`${BASE}/switch-events`)
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) ?? []
+}
+
+export async function addSwitchEvent(req: AddSwitchEventRequest): Promise<SwitchRecord> {
+  const res = await fetch(`${BASE}/switch-events`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),

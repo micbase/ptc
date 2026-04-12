@@ -130,6 +130,51 @@ func handleProjection(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+func handleSwitchEvents(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		records, err := querySwitchEvents(r.Context(), pool)
+		if err != nil {
+			log.Printf("switch events error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(records)
+	}
+}
+
+func handleAddSwitchEvent(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req AddSwitchEventRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.ElectricityRateID == 0 {
+			http.Error(w, "electricity_rate_id is required", http.StatusBadRequest)
+			return
+		}
+		if req.SwitchDate == "" {
+			http.Error(w, "switch_date is required", http.StatusBadRequest)
+			return
+		}
+		if req.ContractExpirationDate == "" {
+			http.Error(w, "contract_expiration_date is required", http.StatusBadRequest)
+			return
+		}
+
+		record, err := insertSwitchEvent(r.Context(), pool, req)
+		if err != nil {
+			log.Printf("add switch event error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(record)
+	}
+}
+
 func handleCharts(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chartType := r.URL.Query().Get("type")

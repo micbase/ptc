@@ -105,6 +105,7 @@ func queryLatestDate(ctx context.Context, pool *pgxpool.Pool) (string, error) {
 func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[string][]Plan, error) {
 	query := `
 		SELECT
+			id,
 			fetch_date::text,
 			COALESCE(rep_company, ''),
 			COALESCE(product, ''),
@@ -132,11 +133,12 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 	result := make(map[string][]Plan)
 	for rows.Next() {
 		var (
+			rateID                                            int
 			dateStr, repCompany, product, rateType, enrollURL string
 			termValue                                         int
 			kwh500, kwh1000, kwh2000                         float64
 		)
-		if err := rows.Scan(&dateStr, &repCompany, &product, &rateType, &termValue,
+		if err := rows.Scan(&rateID, &dateStr, &repCompany, &product, &rateType, &termValue,
 			&kwh500, &kwh1000, &kwh2000, &enrollURL); err != nil {
 			return nil, err
 		}
@@ -158,17 +160,98 @@ func queryAllDecomposedPlans(ctx context.Context, pool *pgxpool.Pool) (map[strin
 			continue
 		}
 		result[dateStr] = append(result[dateStr], Plan{
-			RepCompany:   repCompany,
-			Product:      product,
-			TermValue:    termValue,
-			RateType:     rateType,
-			BaseFee:      baseFee,         // $
-			PerKwhRate:   rateABdol * 100, // ¢/kWh
-			EnrollURL:    enrollURL,
-			Kwh1000Cents: kwh1000 * 100, // ¢/kWh all-in at 1000 kWh
+			ElectricityRateID: rateID,
+			RepCompany:        repCompany,
+			Product:           product,
+			TermValue:         termValue,
+			RateType:          rateType,
+			BaseFee:           baseFee,         // $
+			PerKwhRate:        rateABdol * 100, // ¢/kWh
+			EnrollURL:         enrollURL,
+			Kwh1000Cents:      kwh1000 * 100, // ¢/kWh all-in at 1000 kWh
 		})
 	}
 	return result, rows.Err()
+}
+
+func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool) ([]SwitchRecord, error) {
+	query := `
+		SELECT
+			se.id,
+			se.electricity_rate_id,
+			se.switch_date::text,
+			se.contract_expiration_date::text,
+			COALESCE(se.notes, ''),
+			se.created_at::text,
+			COALESCE(er.rep_company, ''),
+			COALESCE(er.product, ''),
+			COALESCE(er.term_value, 0),
+			COALESCE(er.rate_type, ''),
+			COALESCE(er.kwh1000::float8, 0),
+			COALESCE(er.enroll_url, ''),
+			er.fetch_date::text
+		FROM switch_events se
+		JOIN electricity_rates er ON er.id = se.electricity_rate_id
+		ORDER BY se.switch_date DESC, se.created_at DESC`
+
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	records := make([]SwitchRecord, 0)
+	for rows.Next() {
+		var r SwitchRecord
+		if err := rows.Scan(
+			&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
+			&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+			&r.RateType, &r.Kwh1000, &r.EnrollURL, &r.FetchDate,
+		); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEventRequest) (SwitchRecord, error) {
+	var id int
+	err := pool.QueryRow(ctx, `
+		INSERT INTO switch_events (electricity_rate_id, switch_date, contract_expiration_date, notes)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id`,
+		req.ElectricityRateID, req.SwitchDate, req.ContractExpirationDate, req.Notes,
+	).Scan(&id)
+	if err != nil {
+		return SwitchRecord{}, err
+	}
+
+	var r SwitchRecord
+	err = pool.QueryRow(ctx, `
+		SELECT
+			se.id,
+			se.electricity_rate_id,
+			se.switch_date::text,
+			se.contract_expiration_date::text,
+			COALESCE(se.notes, ''),
+			se.created_at::text,
+			COALESCE(er.rep_company, ''),
+			COALESCE(er.product, ''),
+			COALESCE(er.term_value, 0),
+			COALESCE(er.rate_type, ''),
+			COALESCE(er.kwh1000::float8, 0),
+			COALESCE(er.enroll_url, ''),
+			er.fetch_date::text
+		FROM switch_events se
+		JOIN electricity_rates er ON er.id = se.electricity_rate_id
+		WHERE se.id = $1`, id,
+	).Scan(
+		&r.ID, &r.ElectricityRateID, &r.SwitchDate, &r.ContractExpirationDate,
+		&r.Notes, &r.CreatedAt, &r.RepCompany, &r.Product, &r.TermValue,
+		&r.RateType, &r.Kwh1000, &r.EnrollURL, &r.FetchDate,
+	)
+	return r, err
 }
 
 func absf(x float64) float64 {
