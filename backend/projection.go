@@ -24,13 +24,14 @@ type Plan struct {
 	Kwh1000Cents      float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
 }
 
-// monthsBetween returns the number of calendar months from a to b (rounded down).
+// monthsBetween returns the number of months from a to b, computed as ceiling(days/30).
+// For example, 31 days = 1 month + 1 day → returns 2.
 func monthsBetween(a, b time.Time) int {
-	m := (b.Year()-a.Year())*12 + int(b.Month()-a.Month())
-	if m < 0 {
+	days := int(b.Sub(a).Hours() / 24)
+	if days <= 0 {
 		return 0
 	}
-	return m
+	return (days + 29) / 30 // ceiling division by 30
 }
 
 type SwitchEvent struct {
@@ -363,16 +364,18 @@ func (pc *projectionContext) costForDateRange(plan Plan, startDate, endDate time
 	return totalCost, periodsCovered
 }
 
-// currentPlanCost computes the cost of staying on the current plan for offsetMonths
-// periods, using the current plan's base fee and per-kWh rate. Usage is taken from
-// the projection context's historical lookup (which is anchored at windowStart=today).
-func (pc *projectionContext) currentPlanCost(offsetMonths int, baseFee, perKwhCents float64) float64 {
-	total := 0.0
+// currentPlanCost computes the cost of staying on the current plan from today until
+// the switch date (days away), using day-level precision for the base fee and summing
+// usage across offsetMonths full periods.
+// Base fee is prorated as: days * baseFee / 30.
+// Usage cost is: totalUsageKwh * perKwhCents / 100.
+func (pc *projectionContext) currentPlanCost(offsetMonths, days int, baseFee, perKwhCents float64) float64 {
+	totalUsage := 0.0
 	for i := 0; i < offsetMonths && i < pc.numPeriods; i++ {
 		usage, _ := pc.usageForPeriod(i)
-		total += baseFee + usage*perKwhCents/100.0
+		totalUsage += usage
 	}
-	return total
+	return float64(days)*baseFee/30.0 + totalUsage*perKwhCents/100.0
 }
 
 // newProjectionContext builds a projectionContext anchored at the given windowStart.
@@ -493,7 +496,8 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 		for offset := 0; offset < numOffsets; offset++ {
 			windowStart := today.AddDate(0, offset, 0)
 			etf := etfForWindowStart(windowStart)
-			preCost := round2(pcToday.currentPlanCost(offset, req.CurrentPlanBaseFee, req.CurrentPlanCents))
+			days := int(windowStart.Sub(today).Hours() / 24)
+			preCost := round2(pcToday.currentPlanCost(offset, days, req.CurrentPlanBaseFee, req.CurrentPlanCents))
 
 			pc, err := newProjectionContext(ctx, pool, today, windowStart, allPlans)
 			if err != nil {
