@@ -576,14 +576,10 @@ func computeProjection(ctx context.Context, pool *pgxpool.Pool, req ProjectionRe
 	var results []StrategyResult
 
 	// ── 1. BASELINE ───────────────────────────────────────────────────────────
-	// Roll to variable at windowStartExpiry (= max(expiry, today)).
+	// From expiry, switch to the best variable (1-month) plan every month.
 	{
-		varRes := pcExpiry.selectBestPlan(1, windowStartExpiry)
-		var segments []planSegment
-		if varRes != nil {
-			segments = []planSegment{{start: windowStartExpiry, end: pcExpiry.windowEnd, plan: varRes.plan}}
-		}
-		results = append(results, pcExpiry.buildResult("baseline", "Baseline — stay on current, roll to variable at expiry", segments, nil, 0))
+		segments, switches := pcExpiry.buildFixedRolling(1, 0, windowStartExpiry)
+		results = append(results, pcExpiry.buildResult("baseline", "Baseline — best variable monthly from expiry", segments, switches, 0))
 	}
 
 	// ── 2. SWITCH_AT_EXPIRY_12M ───────────────────────────────────────────────
