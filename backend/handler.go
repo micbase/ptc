@@ -120,7 +120,8 @@ func handleProjection(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
-		today := time.Now().Truncate(24 * time.Hour)
+		now := time.Now()
+		today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		results, err := computeProjection(r.Context(), pool, req, today)
 		if err != nil {
 			log.Printf("projection error: %v", err)
