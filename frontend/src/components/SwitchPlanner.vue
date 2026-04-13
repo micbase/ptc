@@ -230,7 +230,6 @@ const breakdownChartData = computed(() => {
   const sweep = selectedSweep.value
   if (!sweep) return { labels: [], datasets: [] }
 
-  const strategyColor = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
   const activeBestIdx = sweep.best_entry_index
   const activeIdx = selectedOffset.value ?? activeBestIdx
 
@@ -244,8 +243,10 @@ const breakdownChartData = computed(() => {
   const postSwitchData = sweep.entries.map((e) => e.post_switch_cost)
 
   // Highlight the selected bar with full opacity; others dimmed
+  // Fixed colors shared across all strategies
+  const POST_SWITCH_COLOR = '#10b981' // emerald
   const postSwitchColors = sweep.entries.map((_, i) =>
-    i === activeIdx ? strategyColor : hexToRgba(strategyColor, 0.35)
+    i === activeIdx ? POST_SWITCH_COLOR : hexToRgba(POST_SWITCH_COLOR, 0.35)
   )
   const preSwitchColors = sweep.entries.map((_, i) =>
     i === activeIdx ? '#9ca3af' : 'rgba(156,163,175,0.35)'
