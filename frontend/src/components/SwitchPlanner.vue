@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { Line } from 'vue-chartjs'
+import { Line, Bar } from 'vue-chartjs'
 import {
   Chart as ChartJS,
   LineElement,
+  LineController,
   PointElement,
   LinearScale,
   CategoryScale,
   Tooltip,
   Legend,
+  BarElement,
+  BarController,
   type ChartOptions,
   type ChartData,
 } from 'chart.js'
@@ -16,7 +19,7 @@ import { fetchProjection, fetchLatestSwitchEvent } from '../api'
 import type { StrategySweep, SweepEntry, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord, PlanKind } from '../types'
 import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
-ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
+ChartJS.register(LineElement, LineController, PointElement, LinearScale, CategoryScale, Tooltip, Legend, BarElement, BarController)
 
 // ── Form state ────────────────────────────────────────────────────────────────
 const etfText = ref('')
@@ -221,6 +224,122 @@ const selectedEntry = computed<SweepEntry | null>(() => {
 const selectedSweep = computed<StrategySweep | null>(() =>
   sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value) ?? null
 )
+
+// ── Breakdown stacked bar chart ───────────────────────────────────────────────
+const breakdownChartData = computed(() => {
+  const sweep = selectedSweep.value
+  if (!sweep) return { labels: [], datasets: [] }
+
+  const strategyColor = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
+  const activeBestIdx = sweep.best_entry_index
+  const activeIdx = selectedOffset.value ?? activeBestIdx
+
+  const labels = sweep.entries.map((e, i) => (i === 0 ? 'Now' : `+${e.weeks_from_today}w`))
+
+  const variableSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
+
+  // Per-entry stacked segments
+  const preSwitchData = sweep.entries.map((e) => e.pre_switch_cost)
+  const etfData = sweep.entries.map((e) => e.etf_applied)
+  const postSwitchData = sweep.entries.map((e) => e.post_switch_cost)
+
+  // Highlight the selected bar with full opacity; others dimmed
+  const postSwitchColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? strategyColor : hexToRgba(strategyColor, 0.35)
+  )
+  const preSwitchColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? '#9ca3af' : 'rgba(156,163,175,0.35)'
+  )
+  const etfColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? '#ef4444' : 'rgba(239,68,68,0.35)'
+  )
+
+  const datasets: any[] = [
+    {
+      type: 'bar' as const,
+      label: 'Pre-switch',
+      data: preSwitchData,
+      backgroundColor: preSwitchColors,
+      stack: 'cost',
+    },
+    {
+      type: 'bar' as const,
+      label: 'ETF',
+      data: etfData,
+      backgroundColor: etfColors,
+      stack: 'cost',
+    },
+    {
+      type: 'bar' as const,
+      label: 'Post-switch',
+      data: postSwitchData,
+      backgroundColor: postSwitchColors,
+      stack: 'cost',
+    },
+  ]
+
+  if (variableSweep) {
+    datasets.push({
+      type: 'line' as const,
+      label: 'Baseline (variable)',
+      data: variableSweep.entries.map((e) => e.total_cost),
+      borderColor: '#6b7280',
+      backgroundColor: 'transparent',
+      borderDash: [5, 4],
+      pointRadius: 3,
+      pointHoverRadius: 5,
+      tension: 0.15,
+      order: -1,
+    })
+  }
+
+  return { labels, datasets }
+})
+
+const breakdownChartOptions = computed(() => {
+  const sweep = selectedSweep.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: {
+        stacked: true,
+        ticks: { maxRotation: 0 },
+      },
+      y: {
+        stacked: true,
+        title: { display: true, text: 'Total cost ($)' },
+        ticks: {
+          callback: (v: number | string) => `$${Number(v).toFixed(0)}`,
+        },
+      },
+    },
+    plugins: {
+      legend: { position: 'top' as const },
+      tooltip: {
+        callbacks: {
+          title: (items: any[]) => {
+            const idx = items[0]?.dataIndex ?? 0
+            const entry = sweep?.entries[idx]
+            const label = idx === 0 ? 'Now' : `+${entry?.weeks_from_today}w`
+            return entry ? `${label} — enter ${entry.window_start}` : label
+          },
+          label: (ctx: any) => {
+            const val = ctx.raw as number
+            if (!val) return null
+            return `${ctx.dataset.label}: $${val.toFixed(2)}`
+          },
+        },
+      },
+    },
+    onClick: (_event: any, elements: any[]) => {
+      if (elements.length > 0) {
+        const idx = elements[0].index
+        selectedOffset.value = idx
+      }
+    },
+  }
+})
 
 // ── Strategy best-entry summary table ────────────────────────────────────────
 function onRowClick(strategyId: string) {
@@ -523,6 +642,13 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                       <span :class="selectedEntry.savings_vs_baseline >= 0 ? 'text-green-700' : 'text-red-600'">
                         vs baseline: <strong>{{ selectedEntry.savings_vs_baseline >= 0 ? '+' : '' }}${{ selectedEntry.savings_vs_baseline.toFixed(2) }}</strong>
                       </span>
+                    </div>
+
+                    <!-- Breakdown stacked bar chart -->
+                    <div v-if="selectedEntry" class="px-4 pb-3 pt-2 border-b border-blue-100">
+                      <div style="height: 240px">
+                        <Bar :data="(breakdownChartData as any)" :options="(breakdownChartOptions as any)" style="height: 240px" />
+                      </div>
                     </div>
 
                     <!-- Period breakdown table -->
