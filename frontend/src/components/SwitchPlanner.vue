@@ -515,6 +515,18 @@ function openEnrollModal(plan: Plan, periodStart: string) {
               class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Post-expiry Rate (¢/kWh)</label>
+            <input
+              v-model.number="postExpiryRateCents"
+              type="number"
+              step="0.5"
+              min="0"
+              placeholder="e.g. 20"
+              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+            <p class="mt-0.5 text-xs text-gray-400">Assumed rate after new plan expires</p>
+          </div>
           <div class="sm:col-span-2 lg:col-span-4">
             <button
               type="submit"
@@ -657,20 +669,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                           :class="['px-3 py-1.5 transition-colors border-l border-gray-300', totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
                         >Total cost considered</button>
                       </div>
-                      <template v-if="totalCostMode">
-                        <label class="flex items-center gap-1.5 text-xs text-gray-500">
-                          Post-expiry rate:
-                          <input
-                            v-model.number="postExpiryRateCents"
-                            type="number"
-                            step="0.5"
-                            min="0"
-                            @click.stop
-                            class="w-20 border border-gray-300 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
-                          />
-                          <span class="text-gray-400">¢/kWh</span>
-                        </label>
-                      </template>
                     </div>
 
                     <!-- Offset selector tabs -->
