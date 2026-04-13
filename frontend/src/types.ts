@@ -114,7 +114,7 @@ export interface PeriodBreakdown {
 // One candidate entry date within a strategy sweep.
 export interface SweepEntry {
   window_start: string        // "YYYY-MM-DD"
-  months_from_today: number   // 0..11
+  weeks_from_today: number    // 0, 2, 4, ... 50 (bi-weekly steps)
   pre_switch_cost: number     // current plan cost today → window_start
   etf_applied: number         // ETF owed if switching at window_start
   post_switch_cost: number    // 12-month strategy cost from window_start
@@ -125,10 +125,10 @@ export interface SweepEntry {
   switch_count: number
 }
 
-// Sweep over 12 entry-date options for one strategy type.
+// Sweep over 26 bi-weekly entry-date options for one strategy type.
 export interface StrategySweep {
   strategy_id: string
   strategy_name: string
-  entries: SweepEntry[]      // indices 0..11 (months from today)
+  entries: SweepEntry[]      // indices 0..25 (bi-weekly steps from today)
   best_entry_index: number   // index with lowest total_cost
 }

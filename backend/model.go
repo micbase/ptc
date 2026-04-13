@@ -81,7 +81,7 @@ type ProjectionRequest struct {
 // SweepEntry represents one candidate entry date within a strategy sweep.
 type SweepEntry struct {
 	WindowStart       string            `json:"window_start"`        // "YYYY-MM-DD"
-	MonthsFromToday   int               `json:"months_from_today"`   // 0..11
+	WeeksFromToday    int               `json:"weeks_from_today"`    // 0, 2, 4, ... 50 (bi-weekly steps)
 	PreSwitchCost     float64           `json:"pre_switch_cost"`     // current plan cost today → windowStart
 	ETFApplied        float64           `json:"etf_applied"`         // ETF owed if switching at windowStart
 	PostSwitchCost    float64           `json:"post_switch_cost"`    // 12-month strategy cost from windowStart
@@ -92,10 +92,10 @@ type SweepEntry struct {
 	SwitchCount       int               `json:"switch_count"`
 }
 
-// StrategySweep holds all 12 entry-date options for one strategy type.
+// StrategySweep holds all 26 bi-weekly entry-date options for one strategy type.
 type StrategySweep struct {
 	StrategyID     string       `json:"strategy_id"`
 	StrategyName   string       `json:"strategy_name"`
-	Entries        []SweepEntry `json:"entries"`        // indices 0..11 (months from today)
+	Entries        []SweepEntry `json:"entries"`          // indices 0..25 (bi-weekly steps from today)
 	BestEntryIndex int          `json:"best_entry_index"` // index with lowest TotalCost
 }
