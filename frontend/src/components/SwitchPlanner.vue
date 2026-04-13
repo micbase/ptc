@@ -106,6 +106,13 @@ function computePostExpiryCost(entry: SweepEntry): number {
   return avgMonthlyKwh * 12 * (postExpiryRateCents.value / 100)
 }
 
+// Returns the best entry index for a sweep based on the current cost mode.
+// In post-switch only mode: backend-provided best_entry_index_post_switch (lowest post_switch_cost).
+// In total cost mode: backend-provided best_entry_index (lowest total_cost).
+function effectiveBestIndex(sweep: StrategySweep): number {
+  return totalCostMode.value ? sweep.best_entry_index : sweep.best_entry_index_post_switch
+}
+
 // X-axis labels
 const offsetLabels = computed(() => {
   if (sweeps.value.length === 0) return []
@@ -120,9 +127,10 @@ const bestOverall = computed<{ sweep: StrategySweep; entry: SweepEntry; entryInd
   let best: { sweep: StrategySweep; entry: SweepEntry; entryIndex: number } | null = null
   for (const sweep of sweeps.value) {
     if (sweep.strategy_id === 'variable') continue
-    const entry = sweep.entries[sweep.best_entry_index]
+    const idx = effectiveBestIndex(sweep)
+    const entry = sweep.entries[idx]
     if (!best || entry.savings_vs_baseline > best.entry.savings_vs_baseline) {
-      best = { sweep, entry, entryIndex: sweep.best_entry_index }
+      best = { sweep, entry, entryIndex: idx }
     }
   }
   return best
@@ -148,9 +156,10 @@ const sweepChartData = computed<ChartData<'line'>>(() => {
   const datasets = sweeps.value.map((sweep) => {
     const color = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
     const data = sweep.entries.map((e) => e.total_cost)
-    const pointRadius = sweep.entries.map((_, i) => i === sweep.best_entry_index ? 8 : 3)
+    const bestIdx = effectiveBestIndex(sweep)
+    const pointRadius = sweep.entries.map((_, i) => i === bestIdx ? 8 : 3)
     const pointStyle = sweep.entries.map((_, i) =>
-      i === sweep.best_entry_index ? ('rectRot' as const) : ('circle' as const)
+      i === bestIdx ? ('rectRot' as const) : ('circle' as const)
     )
     const isSelected = selectedStrategyId.value !== null && selectedStrategyId.value === sweep.strategy_id
     const isDeemphasized = selectedStrategyId.value !== null && !isSelected
@@ -195,7 +204,7 @@ const sweepChartOptions = computed<ChartOptions<'line'>>(() => ({
           if (!sweep) return ''
           const entry = sweep.entries[ctx.dataIndex]
           if (!entry) return `${sweep.strategy_name}: $${(ctx.raw as number).toFixed(2)}`
-          const isBest = ctx.dataIndex === sweep.best_entry_index
+          const isBest = ctx.dataIndex === effectiveBestIndex(sweep)
           const parts = [`${sweep.strategy_name}: $${entry.total_cost.toFixed(2)}${isBest ? ' ★ best' : ''}`]
           if (entry.pre_switch_cost > 0) parts.push(`  pre-switch: $${entry.pre_switch_cost.toFixed(2)}`)
           if (entry.etf_applied > 0) parts.push(`  ETF: $${entry.etf_applied.toFixed(2)}`)
@@ -228,7 +237,7 @@ const selectedEntry = computed<SweepEntry | null>(() => {
   if (selectedStrategyId.value === null) return null
   const sweep = sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value)
   if (!sweep) return null
-  const idx = selectedOffset.value ?? sweep.best_entry_index
+  const idx = selectedOffset.value ?? effectiveBestIndex(sweep)
   return sweep.entries[idx] ?? null
 })
 
@@ -246,7 +255,7 @@ const breakdownChartData = computed(() => {
   const sweep = selectedSweep.value
   if (!sweep) return { labels: [], datasets: [] }
 
-  const activeBestIdx = sweep.best_entry_index
+  const activeBestIdx = effectiveBestIndex(sweep)
   const activeIdx = selectedOffset.value ?? activeBestIdx
 
   const labels = sweep.entries.map((e, i) => (i === 0 ? 'Now' : `+${e.weeks_from_today}w`))
@@ -588,33 +597,33 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     </div>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-700">
-                    {{ sweep.best_entry_index === 0 ? 'Now' : `+${sweep.entries[sweep.best_entry_index].weeks_from_today}w` }}
-                    <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[sweep.best_entry_index].window_start }})</span>
+                    {{ effectiveBestIndex(sweep) === 0 ? 'Now' : `+${sweep.entries[effectiveBestIndex(sweep)].weeks_from_today}w` }}
+                    <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[effectiveBestIndex(sweep)].window_start }})</span>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-600">
-                    {{ sweep.entries[sweep.best_entry_index].pre_switch_cost > 0
-                      ? `$${sweep.entries[sweep.best_entry_index].pre_switch_cost.toFixed(2)}`
+                    {{ sweep.entries[effectiveBestIndex(sweep)].pre_switch_cost > 0
+                      ? `$${sweep.entries[effectiveBestIndex(sweep)].pre_switch_cost.toFixed(2)}`
                       : '—' }}
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums">
-                    <span :class="sweep.entries[sweep.best_entry_index].etf_applied > 0 ? 'text-red-600' : 'text-gray-400'">
-                      {{ sweep.entries[sweep.best_entry_index].etf_applied > 0
-                        ? `$${sweep.entries[sweep.best_entry_index].etf_applied.toFixed(2)}`
+                    <span :class="sweep.entries[effectiveBestIndex(sweep)].etf_applied > 0 ? 'text-red-600' : 'text-gray-400'">
+                      {{ sweep.entries[effectiveBestIndex(sweep)].etf_applied > 0
+                        ? `$${sweep.entries[effectiveBestIndex(sweep)].etf_applied.toFixed(2)}`
                         : '—' }}
                     </span>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-700">
-                    ${{ sweep.entries[sweep.best_entry_index].post_switch_cost.toFixed(2) }}
+                    ${{ sweep.entries[effectiveBestIndex(sweep)].post_switch_cost.toFixed(2) }}
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums font-semibold text-gray-900">
-                    ${{ sweep.entries[sweep.best_entry_index].total_cost.toFixed(2) }}
+                    ${{ sweep.entries[effectiveBestIndex(sweep)].total_cost.toFixed(2) }}
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums font-semibold">
-                    <span :class="sweep.entries[sweep.best_entry_index].savings_vs_baseline > 0 ? 'text-green-700'
-                      : sweep.entries[sweep.best_entry_index].savings_vs_baseline < 0 ? 'text-red-600'
+                    <span :class="sweep.entries[effectiveBestIndex(sweep)].savings_vs_baseline > 0 ? 'text-green-700'
+                      : sweep.entries[effectiveBestIndex(sweep)].savings_vs_baseline < 0 ? 'text-red-600'
                       : 'text-gray-400'">
-                      {{ sweep.entries[sweep.best_entry_index].savings_vs_baseline > 0 ? '+' : '' }}${{
-                        sweep.entries[sweep.best_entry_index].savings_vs_baseline.toFixed(2) }}
+                      {{ sweep.entries[effectiveBestIndex(sweep)].savings_vs_baseline > 0 ? '+' : '' }}${{
+                        sweep.entries[effectiveBestIndex(sweep)].savings_vs_baseline.toFixed(2) }}
                     </span>
                   </td>
                 </tr>
@@ -646,14 +655,14 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                         @click.stop="selectedOffset = idx"
                         :class="[
                           'px-2 py-0.5 text-xs rounded border transition-colors',
-                          (selectedOffset === idx || (selectedOffset === null && idx === sweep.best_entry_index))
+                          (selectedOffset === idx || (selectedOffset === null && idx === effectiveBestIndex(sweep)))
                             ? 'bg-blue-600 text-white border-blue-600'
                             : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50',
-                          idx === sweep.best_entry_index ? 'font-bold' : '',
+                          idx === effectiveBestIndex(sweep) ? 'font-bold' : '',
                         ]"
                       >
                         {{ idx === 0 ? 'Now' : `+${entry.weeks_from_today}w` }}
-                        <span v-if="idx === sweep.best_entry_index" class="ml-0.5">★</span>
+                        <span v-if="idx === effectiveBestIndex(sweep)" class="ml-0.5">★</span>
                       </button>
                     </div>
 

@@ -576,6 +576,15 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 			}
 		}
 		sweep.BestEntryIndex = bestIdx
+
+		// Best entry (post-switch only) = lowest PostSwitchCost.
+		bestIdxPost := 0
+		for i := 1; i < numOffsets; i++ {
+			if sweep.Entries[i].PostSwitchCost < sweep.Entries[bestIdxPost].PostSwitchCost {
+				bestIdxPost = i
+			}
+		}
+		sweep.BestEntryIndexPostSwitch = bestIdxPost
 		sweeps[si] = sweep
 	}
 
