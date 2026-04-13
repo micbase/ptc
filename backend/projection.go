@@ -477,6 +477,66 @@ func newProjectionContext(
 	}, nil
 }
 
+// withActionDate returns a shallow copy of the projectionContext with today replaced
+// by actionDate. The usageMap, allPlans, and period bounds are shared (not re-queried).
+// Safe for action dates within ~30 days of the original today, since historical period
+// starts used for usage lookups do not change meaningfully over that window.
+func (pc *projectionContext) withActionDate(actionDate time.Time) *projectionContext {
+	clone := *pc
+	clone.today = actionDate
+	return &clone
+}
+
+// computeActionDateRange determines the range of action dates (sign-up dates) within
+// the 30-day enrollment window that yield the minimum post-switch cost for the given
+// contract start date. pc must be the projectionContext anchored at bestStart.
+// Returns (actionDateStart, actionDateEnd) as "YYYY-MM-DD" strings.
+func computeActionDateRange(today, bestStart time.Time, pc *projectionContext, spec strategySpec, etf float64) (string, string) {
+	rawStart := bestStart.AddDate(0, 0, -30)
+	if rawStart.Before(today) {
+		rawStart = today
+	}
+
+	type dayResult struct {
+		date     time.Time
+		postCost float64
+	}
+
+	var results []dayResult
+	minCost := math.MaxFloat64
+
+	for d := rawStart; !d.After(bestStart); d = d.AddDate(0, 0, 1) {
+		pcD := pc.withActionDate(d)
+		segments, _ := pcD.buildGreedyRolling(spec.termOptions, spec.fallback, etf, bestStart)
+		_, postCost := pcD.buildBreakdown(segments)
+		rc := round2(postCost)
+		results = append(results, dayResult{d, rc})
+		if rc < minCost {
+			minCost = rc
+		}
+	}
+
+	if len(results) == 0 {
+		return rawStart.Format("2006-01-02"), bestStart.Format("2006-01-02")
+	}
+
+	// Find earliest and latest dates achieving (near-)minimum cost ($0.01 tolerance).
+	first := bestStart
+	last := rawStart
+	for _, r := range results {
+		if r.postCost <= minCost+0.01 {
+			if r.date.Before(first) {
+				first = r.date
+			}
+			if r.date.After(last) {
+				last = r.date
+			}
+		}
+	}
+
+	return first.Format("2006-01-02"), last.Format("2006-01-02")
+}
+
 // strategySpec describes one sweep strategy.
 type strategySpec struct {
 	id, name    string
@@ -538,6 +598,9 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 			Entries:      make([]SweepEntry, numOffsets),
 		}
 
+		// Save per-offset contexts so we can reuse them for action-date range simulation.
+		pcs := make([]*projectionContext, numOffsets)
+
 		for offset := 0; offset < numOffsets; offset++ {
 			windowStart := today.AddDate(0, 0, offset*14) // advance by 14 days per step
 			etf := etfForWindowStart(windowStart)
@@ -548,6 +611,7 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 			if err != nil {
 				return nil, err
 			}
+			pcs[offset] = pc
 
 			segments, switches := pc.buildGreedyRolling(spec.termOptions, spec.fallback, etf, windowStart)
 			breakdown, postCost := pc.buildBreakdown(segments)
@@ -585,6 +649,18 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 			}
 		}
 		sweep.BestEntryIndexPostSwitch = bestIdxPost
+
+		// Compute action date ranges: for each best entry, find the sub-window of the
+		// 30-day enrollment period where signing up yields the minimum post-switch cost.
+		bestStart := today.AddDate(0, 0, bestIdx*14)
+		sweep.ActionDateStart, sweep.ActionDateEnd = computeActionDateRange(
+			today, bestStart, pcs[bestIdx], spec, etfForWindowStart(bestStart),
+		)
+		bestStartPost := today.AddDate(0, 0, bestIdxPost*14)
+		sweep.ActionDateStartPostSwitch, sweep.ActionDateEndPostSwitch = computeActionDateRange(
+			today, bestStartPost, pcs[bestIdxPost], spec, etfForWindowStart(bestStartPost),
+		)
+
 		sweeps[si] = sweep
 	}
 

@@ -113,6 +113,26 @@ function effectiveBestIndex(sweep: StrategySweep): number {
   return totalCostMode.value ? sweep.best_entry_index : sweep.best_entry_index_post_switch
 }
 
+// Returns the action date range for a sweep based on the current cost mode.
+function effectiveActionDateRange(sweep: StrategySweep): { start: string; end: string } {
+  if (totalCostMode.value) {
+    return { start: sweep.action_date_start, end: sweep.action_date_end }
+  }
+  return { start: sweep.action_date_start_post_switch, end: sweep.action_date_end_post_switch }
+}
+
+// Formats an action date range as a human-readable string, e.g. "Apr 11 – May 11".
+function formatActionDateRange(start: string, end: string): string {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const fmt = (d: string) => {
+    const [, m, day] = d.split('-')
+    return `${months[parseInt(m) - 1]} ${parseInt(day)}`
+  }
+  if (!start || !end) return ''
+  if (start === end) return `Sign up by ${fmt(start)}`
+  return `Sign up ${fmt(start)} – ${fmt(end)}`
+}
+
 // X-axis labels
 const offsetLabels = computed(() => {
   if (sweeps.value.length === 0) return []
@@ -599,6 +619,9 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                   <td class="px-4 py-3 text-right tabular-nums text-gray-700">
                     {{ effectiveBestIndex(sweep) === 0 ? 'Now' : `+${sweep.entries[effectiveBestIndex(sweep)].weeks_from_today}w` }}
                     <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[effectiveBestIndex(sweep)].window_start }})</span>
+                    <div class="text-xs text-blue-600 mt-0.5">
+                      {{ formatActionDateRange(effectiveActionDateRange(sweep).start, effectiveActionDateRange(sweep).end) }}
+                    </div>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-600">
                     {{ sweep.entries[effectiveBestIndex(sweep)].pre_switch_cost > 0

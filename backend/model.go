@@ -94,9 +94,13 @@ type SweepEntry struct {
 
 // StrategySweep holds all 26 bi-weekly entry-date options for one strategy type.
 type StrategySweep struct {
-	StrategyID                string       `json:"strategy_id"`
-	StrategyName              string       `json:"strategy_name"`
-	Entries                   []SweepEntry `json:"entries"`                      // indices 0..25 (bi-weekly steps from today)
-	BestEntryIndex            int          `json:"best_entry_index"`             // index with lowest TotalCost
-	BestEntryIndexPostSwitch  int          `json:"best_entry_index_post_switch"` // index with lowest PostSwitchCost
+	StrategyID                    string       `json:"strategy_id"`
+	StrategyName                  string       `json:"strategy_name"`
+	Entries                       []SweepEntry `json:"entries"`                            // indices 0..25 (bi-weekly steps from today)
+	BestEntryIndex                int          `json:"best_entry_index"`                   // index with lowest TotalCost
+	BestEntryIndexPostSwitch      int          `json:"best_entry_index_post_switch"`        // index with lowest PostSwitchCost
+	ActionDateStart               string       `json:"action_date_start"`                  // earliest sign-up date for total-cost best entry
+	ActionDateEnd                 string       `json:"action_date_end"`                    // latest sign-up date for total-cost best entry
+	ActionDateStartPostSwitch     string       `json:"action_date_start_post_switch"`       // earliest sign-up date for post-switch best entry
+	ActionDateEndPostSwitch       string       `json:"action_date_end_post_switch"`         // latest sign-up date for post-switch best entry
 }
