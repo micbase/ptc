@@ -515,7 +515,7 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 		return req.ETFAmount
 	}
 
-	const numOffsets = 12
+	const numOffsets = 26 // bi-weekly steps: 26 × 14 days ≈ 12 months
 	sweeps := make([]StrategySweep, len(sweepStrategies))
 
 	for si, spec := range sweepStrategies {
@@ -526,7 +526,7 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 		}
 
 		for offset := 0; offset < numOffsets; offset++ {
-			windowStart := today.AddDate(0, offset, 0)
+			windowStart := today.AddDate(0, 0, offset*14) // advance by 14 days per step
 			etf := etfForWindowStart(windowStart)
 			days := int(windowStart.Sub(today).Hours() / 24)
 			preCost := round2(pcToday.currentPlanCost(offset, days, req.CurrentPlanBaseFee, req.CurrentPlanCents))
@@ -544,7 +544,7 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 
 			sweep.Entries[offset] = SweepEntry{
 				WindowStart:     windowStart.Format("2006-01-02"),
-				MonthsFromToday: offset,
+				WeeksFromToday:  offset * 2,
 				PreSwitchCost:   preCost,
 				ETFApplied:      round2(etf),
 				PostSwitchCost:  round2(postCost),
