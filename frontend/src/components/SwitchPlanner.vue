@@ -240,20 +240,6 @@ const selectedEntryPostExpiryCost = computed(() =>
   selectedEntry.value ? computePostExpiryCost(selectedEntry.value) : 0
 )
 
-// Savings vs baseline adjusted for display mode
-const selectedEntrySavings = computed(() => {
-  if (!selectedEntry.value) return 0
-  const idx = selectedOffset.value ?? selectedSweep.value?.best_entry_index ?? 0
-  const varEntry = sweeps.value.find((s) => s.strategy_id === 'variable')?.entries[idx]
-  if (!varEntry) return selectedEntry.value.savings_vs_baseline
-  if (totalCostMode.value) {
-    const varTotal = varEntry.total_cost + computePostExpiryCost(varEntry)
-    const myTotal = selectedEntry.value.total_cost + selectedEntryPostExpiryCost.value
-    return varTotal - myTotal
-  } else {
-    return varEntry.post_switch_cost - selectedEntry.value.post_switch_cost
-  }
-})
 
 // ── Breakdown stacked bar chart ───────────────────────────────────────────────
 const breakdownChartData = computed(() => {
@@ -690,10 +676,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                       <template v-else>
                         <span>Total (12m): <strong>${{ selectedEntry.post_switch_cost.toFixed(2) }}</strong></span>
                       </template>
-                      <span :class="selectedEntrySavings >= 0 ? 'text-green-700' : 'text-red-600'">
-                        vs baseline: <strong>{{ selectedEntrySavings >= 0 ? '+' : '' }}${{ selectedEntrySavings.toFixed(2) }}</strong>
-                      </span>
-                    </div>
+                                    </div>
 
                     <!-- Breakdown stacked bar chart -->
                     <div v-if="selectedEntry" class="px-4 pb-3 pt-2 border-b border-blue-100">
