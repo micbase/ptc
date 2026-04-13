@@ -9,19 +9,31 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// PlanKind describes the source of a plan's rates.
+// actual    = today's live market rates (enrollment is available now).
+// projected = historical rates from ~1 year ago used as a proxy for a future period.
+// fallback  = most-recent available historical rates, used when the ideal window has no data.
+type PlanKind string
+
+const (
+	PlanKindActual    PlanKind = "actual"
+	PlanKindProjected PlanKind = "projected"
+	PlanKindFallback  PlanKind = "fallback"
+)
+
 // Plan is a candidate plan from the database, enriched with decomposed rates.
-// isActual is unexported: true when rates come from today's live plans, false for historical projections.
+// planKind is unexported; set by selectBestPlan to indicate the data source.
 type Plan struct {
-	ElectricityRateID int     `json:"electricity_rate_id"` // electricity_rates.id, for recording switch events
-	RepCompany        string  `json:"rep_company"`
-	Product           string  `json:"product"`
-	TermValue         int     `json:"term_value"`
-	RateType          string  `json:"rate_type"`
-	BaseFee           float64 `json:"base_fee"`      // $ per month (decomposed)
-	PerKwhRate        float64 `json:"per_kwh_rate"`  // ¢/kWh (decomposed)
-	EnrollURL         string  `json:"enroll_url"`
-	isActual          bool    // not serialised; set by selectBestPlan
-	Kwh1000Cents      float64 `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
+	ElectricityRateID int      `json:"electricity_rate_id"` // electricity_rates.id, for recording switch events
+	RepCompany        string   `json:"rep_company"`
+	Product           string   `json:"product"`
+	TermValue         int      `json:"term_value"`
+	RateType          string   `json:"rate_type"`
+	BaseFee           float64  `json:"base_fee"`      // $ per month (decomposed)
+	PerKwhRate        float64  `json:"per_kwh_rate"`  // ¢/kWh (decomposed)
+	EnrollURL         string   `json:"enroll_url"`
+	planKind          PlanKind // not serialised; set by selectBestPlan
+	Kwh1000Cents      float64  `json:"kwh1000_cents"` // original kwh1000 from db (¢/kWh all-in at 1000 kWh)
 }
 
 // monthsBetween returns the number of months from a to b, computed as ceiling(days/30).
@@ -41,16 +53,16 @@ type SwitchEvent struct {
 }
 
 type PeriodBreakdown struct {
-	Period           string  `json:"period"`            // "T+N" period label
-	PeriodStart      string  `json:"period_start"`      // "YYYY-MM-DD"
-	PeriodEnd        string  `json:"period_end"`        // "YYYY-MM-DD" (inclusive last day)
-	UsageKwh         float64 `json:"usage_kwh"`
-	UsageIsEstimated bool    `json:"usage_is_estimated"`
-	ActivePlan       Plan    `json:"active_plan"`
-	RateCents        float64 `json:"rate_cents"`
-	BaseFee          float64 `json:"base_fee"`
-	PeriodCost       float64 `json:"period_cost"`
-	IsProjected      bool    `json:"is_projected"` // true when rates are a historical estimate, not today's live rates
+	Period           string   `json:"period"`            // "T+N" period label
+	PeriodStart      string   `json:"period_start"`      // "YYYY-MM-DD"
+	PeriodEnd        string   `json:"period_end"`        // "YYYY-MM-DD" (inclusive last day)
+	UsageKwh         float64  `json:"usage_kwh"`
+	UsageIsEstimated bool     `json:"usage_is_estimated"`
+	ActivePlan       Plan     `json:"active_plan"`
+	RateCents        float64  `json:"rate_cents"`
+	BaseFee          float64  `json:"base_fee"`
+	PeriodCost       float64  `json:"period_cost"`
+	PlanKind         PlanKind `json:"plan_kind"` // "actual" | "projected" | "fallback"
 }
 
 // planSegment is a half-open interval [start, end) covered by a single plan.
@@ -171,7 +183,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 
 	bestCost := math.MaxFloat64
 	var bestPlan *Plan
-	isActual := false
+	bestKind := PlanKindProjected
 
 	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
 
@@ -182,7 +194,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			if cost < bestCost {
 				bestCost = cost
 				bestPlan = p
-				isActual = true
+				bestKind = PlanKindActual
 			}
 		}
 	}
@@ -206,10 +218,12 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		histEnd = decisionDate.AddDate(-yearsBack, 0, 0)
 	}
 	if histStart.Before(histEnd) {
+		isFallback := false
 		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
 		if histPlan == nil {
 			// Fallback: no data in ideal window — use the most recent date that has
 			// at least one plan with a matching term.
+			isFallback = true
 			var latestDate time.Time
 			for dateStr, candidates := range pc.allPlans {
 				fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
@@ -232,7 +246,11 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			if histCost < bestCost {
 				bestCost = histCost
 				bestPlan = histPlan
-				isActual = false
+				if isFallback {
+					bestKind = PlanKindFallback
+				} else {
+					bestKind = PlanKindProjected
+				}
 			}
 		}
 	}
@@ -241,9 +259,9 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		return nil
 	}
 
-	// Return a copy with isActual stamped in.
+	// Return a copy with planKind stamped in.
 	result := *bestPlan
-	result.isActual = isActual
+	result.planKind = bestKind
 	return &result
 }
 
@@ -281,8 +299,8 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 			ActivePlan:       segPlan,
 			RateCents:        round2(segPlan.PerKwhRate),
 			BaseFee:          round2(segPlan.BaseFee),
-			PeriodCost:       round2(cost),
-			IsProjected:      !segPlan.isActual,
+			PeriodCost: round2(cost),
+			PlanKind:   segPlan.planKind,
 		}
 	}
 	return breakdown, total

@@ -13,7 +13,7 @@ import {
   type ChartData,
 } from 'chart.js'
 import { fetchProjection, fetchLatestSwitchEvent } from '../api'
-import type { StrategySweep, SweepEntry, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord } from '../types'
+import type { StrategySweep, SweepEntry, PeriodBreakdown, ProjectionRequest, Plan, SwitchRecord, PlanKind } from '../types'
 import EnrollConfirmModal from './EnrollConfirmModal.vue'
 
 ChartJS.register(LineElement, PointElement, LinearScale, CategoryScale, Tooltip, Legend)
@@ -555,15 +555,30 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                             <td class="px-3 py-2 text-gray-600 max-w-xs">
                               {{ pb.active_plan.rep_company }} — {{ pb.active_plan.product }}
                               <span class="text-gray-400">({{ pb.active_plan.term_value === 1 ? 'Variable' : `${pb.active_plan.term_value}m Fixed` }})</span>
+                              <span
+                                v-if="pb.plan_kind === 'actual'"
+                                class="ml-1 inline-block text-xs bg-green-100 text-green-700 px-1 rounded"
+                                title="Live market rate — enrollment available"
+                              >live</span>
+                              <span
+                                v-else-if="pb.plan_kind === 'projected'"
+                                class="ml-1 inline-block text-xs bg-blue-100 text-blue-600 px-1 rounded"
+                                title="Projected from historical rates (~1 year ago)"
+                              >est</span>
+                              <span
+                                v-else-if="pb.plan_kind === 'fallback'"
+                                class="ml-1 inline-block text-xs bg-amber-100 text-amber-700 px-1 rounded"
+                                title="Fallback: most-recent historical rate used (no data in ideal window)"
+                              >fallback</span>
                               <button
-                                v-if="pb.active_plan.enroll_url && !pb.is_projected"
+                                v-if="pb.active_plan.enroll_url && pb.plan_kind === 'actual'"
                                 @click.stop="openEnrollModal(pb.active_plan, pb.period_start)"
                                 class="ml-2 text-blue-600 hover:underline"
                               >Enroll</button>
                             </td>
                             <td class="px-3 py-2 text-right tabular-nums text-gray-700">{{ pb.active_plan.kwh1000_cents.toFixed(2) }}</td>
                             <td class="px-3 py-2 text-right tabular-nums text-gray-700">
-                              {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.is_projected" class="ml-0.5 text-gray-400" title="Projected from historical data">~</span>
+                              {{ pb.rate_cents.toFixed(2) }}<span v-if="pb.plan_kind !== 'actual'" class="ml-0.5 text-gray-400" title="Estimated rate">~</span>
                             </td>
                             <td class="px-3 py-2 text-right tabular-nums text-gray-700">${{ pb.base_fee.toFixed(2) }}</td>
                             <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-900">${{ pb.period_cost.toFixed(2) }}</td>

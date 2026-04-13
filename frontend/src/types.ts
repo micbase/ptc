@@ -92,6 +92,12 @@ export interface AddSwitchEventRequest {
   notes: string
 }
 
+// PlanKind describes the source of a period's rates.
+// actual    = today's live market rates (enrollment is available).
+// projected = historical rates from ~1 year ago used as a proxy for a future period.
+// fallback  = most-recent available historical rates (ideal window had no data).
+export type PlanKind = 'actual' | 'projected' | 'fallback'
+
 export interface PeriodBreakdown {
   period: string        // "T+N" period label
   period_start: string  // "YYYY-MM-DD"
@@ -102,7 +108,7 @@ export interface PeriodBreakdown {
   rate_cents: number
   base_fee: number
   period_cost: number
-  is_projected: boolean  // true when rates are a historical estimate, not today's live rates
+  plan_kind: PlanKind   // "actual" | "projected" | "fallback"
 }
 
 // One candidate entry date within a strategy sweep.
