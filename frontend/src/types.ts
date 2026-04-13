@@ -129,6 +129,7 @@ export interface SweepEntry {
 export interface StrategySweep {
   strategy_id: string
   strategy_name: string
-  entries: SweepEntry[]      // indices 0..25 (bi-weekly steps from today)
-  best_entry_index: number   // index with lowest total_cost
+  entries: SweepEntry[]                  // indices 0..25 (bi-weekly steps from today)
+  best_entry_index: number               // index with lowest total_cost
+  best_entry_index_post_switch: number   // index with lowest post_switch_cost
 }

@@ -107,17 +107,10 @@ function computePostExpiryCost(entry: SweepEntry): number {
 }
 
 // Returns the best entry index for a sweep based on the current cost mode.
-// In post-switch only mode, best = lowest post_switch_cost.
-// In total cost mode, best = backend-provided best_entry_index (lowest total_cost).
+// In post-switch only mode: backend-provided best_entry_index_post_switch (lowest post_switch_cost).
+// In total cost mode: backend-provided best_entry_index (lowest total_cost).
 function effectiveBestIndex(sweep: StrategySweep): number {
-  if (totalCostMode.value) return sweep.best_entry_index
-  let bestIdx = 0
-  for (let i = 1; i < sweep.entries.length; i++) {
-    if (sweep.entries[i].post_switch_cost < sweep.entries[bestIdx].post_switch_cost) {
-      bestIdx = i
-    }
-  }
-  return bestIdx
+  return totalCostMode.value ? sweep.best_entry_index : sweep.best_entry_index_post_switch
 }
 
 // X-axis labels
