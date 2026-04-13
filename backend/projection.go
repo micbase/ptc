@@ -396,10 +396,17 @@ func newProjectionContext(
 	}
 	windowEnd := periodStarts[numPeriods]
 
-	// Historical period starts for usage lookup: same T+i offsets, 1 year back.
+	// Historical period starts for usage lookup: same T+i offsets, shifted back in
+	// time until the date is no longer in the future.  For windows anchored near
+	// today this is a simple 1-year lookback; for windows far in the future we keep
+	// subtracting years until the historical date has real data available.
 	histPeriodStarts := make([]time.Time, numPeriods)
 	for i := 0; i < numPeriods; i++ {
-		histPeriodStarts[i] = windowStart.AddDate(-1, i, 0)
+		h := windowStart.AddDate(-1, i, 0)
+		for h.AddDate(0, 1, 0).After(today) {
+			h = h.AddDate(-1, 0, 0)
+		}
+		histPeriodStarts[i] = h
 	}
 
 	usageMap, estimatedMap, err := queryPeriodUsage(ctx, pool, histPeriodStarts)
