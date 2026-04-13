@@ -400,7 +400,7 @@ func newProjectionContext(
 	histPeriodStarts := make([]time.Time, numPeriods)
 	for i := 0; i < numPeriods; i++ {
 		h := windowStart.AddDate(-1, i, 0)
-		for h.After(today) {
+		for h.AddDate(0, 1, 0).After(today) {
 			h = h.AddDate(-1, 0, 0)
 		}
 		histPeriodStarts[i] = h
