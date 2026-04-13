@@ -95,6 +95,17 @@ function hexToRgba(hex: string, alpha: number): string {
 const selectedStrategyId = ref<string | null>(null)
 const selectedOffset = ref<number | null>(null)
 
+// ── Cost view mode ────────────────────────────────────────────────────────────
+// false = post-switch only (apples-to-apples); true = full lifecycle (pre + ETF + post + post-expiry)
+const totalCostMode = ref(false)
+const postExpiryRateCents = ref(20) // ¢/kWh after the new plan's 12m term ends
+
+function computePostExpiryCost(entry: SweepEntry): number {
+  if (entry.period_breakdown.length === 0) return 0
+  const avgMonthlyKwh = entry.period_breakdown.reduce((s, p) => s + p.usage_kwh, 0) / entry.period_breakdown.length
+  return avgMonthlyKwh * 12 * (postExpiryRateCents.value / 100)
+}
+
 // X-axis labels
 const offsetLabels = computed(() => {
   if (sweeps.value.length === 0) return []
@@ -225,6 +236,25 @@ const selectedSweep = computed<StrategySweep | null>(() =>
   sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value) ?? null
 )
 
+const selectedEntryPostExpiryCost = computed(() =>
+  selectedEntry.value ? computePostExpiryCost(selectedEntry.value) : 0
+)
+
+// Savings vs baseline adjusted for display mode
+const selectedEntrySavings = computed(() => {
+  if (!selectedEntry.value) return 0
+  const idx = selectedOffset.value ?? selectedSweep.value?.best_entry_index ?? 0
+  const varEntry = sweeps.value.find((s) => s.strategy_id === 'variable')?.entries[idx]
+  if (!varEntry) return selectedEntry.value.savings_vs_baseline
+  if (totalCostMode.value) {
+    const varTotal = varEntry.total_cost + computePostExpiryCost(varEntry)
+    const myTotal = selectedEntry.value.total_cost + selectedEntryPostExpiryCost.value
+    return varTotal - myTotal
+  } else {
+    return varEntry.post_switch_cost - selectedEntry.value.post_switch_cost
+  }
+})
+
 // ── Breakdown stacked bar chart ───────────────────────────────────────────────
 const breakdownChartData = computed(() => {
   const sweep = selectedSweep.value
@@ -235,55 +265,61 @@ const breakdownChartData = computed(() => {
 
   const labels = sweep.entries.map((e, i) => (i === 0 ? 'Now' : `+${e.weeks_from_today}w`))
 
-  const variableSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
+  const varSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
 
-  // Per-entry stacked segments
-  const preSwitchData = sweep.entries.map((e) => e.pre_switch_cost)
-  const etfData = sweep.entries.map((e) => e.etf_applied)
-  const postSwitchData = sweep.entries.map((e) => e.post_switch_cost)
-
-  // Highlight the selected bar with full opacity; others dimmed
-  // Fixed colors shared across all strategies
+  // Color constants (fixed across all strategies)
   const POST_SWITCH_COLOR = '#10b981' // emerald
-  const postSwitchColors = sweep.entries.map((_, i) =>
-    i === activeIdx ? POST_SWITCH_COLOR : hexToRgba(POST_SWITCH_COLOR, 0.35)
-  )
-  const preSwitchColors = sweep.entries.map((_, i) =>
-    i === activeIdx ? '#9ca3af' : 'rgba(156,163,175,0.35)'
-  )
-  const etfColors = sweep.entries.map((_, i) =>
-    i === activeIdx ? '#ef4444' : 'rgba(239,68,68,0.35)'
-  )
+  const PRE_SWITCH_COLOR = '#9ca3af'  // gray
+  const ETF_COLOR = '#ef4444'          // red
+  const POST_EXPIRY_COLOR = '#f97316' // orange
 
-  const datasets: any[] = [
-    {
+  const hi = (base: string, i: number) => (i === activeIdx ? base : hexToRgba(base, 0.35))
+
+  const datasets: any[] = []
+
+  if (totalCostMode.value) {
+    datasets.push({
       type: 'bar' as const,
       label: 'Pre-switch',
-      data: preSwitchData,
-      backgroundColor: preSwitchColors,
+      data: sweep.entries.map((e) => e.pre_switch_cost),
+      backgroundColor: sweep.entries.map((_, i) => hi(PRE_SWITCH_COLOR, i)),
       stack: 'cost',
-    },
-    {
+    })
+    datasets.push({
       type: 'bar' as const,
       label: 'ETF',
-      data: etfData,
-      backgroundColor: etfColors,
+      data: sweep.entries.map((e) => e.etf_applied),
+      backgroundColor: sweep.entries.map((_, i) => hi(ETF_COLOR, i)),
       stack: 'cost',
-    },
-    {
-      type: 'bar' as const,
-      label: 'Post-switch',
-      data: postSwitchData,
-      backgroundColor: postSwitchColors,
-      stack: 'cost',
-    },
-  ]
+    })
+  }
 
-  if (variableSweep) {
+  datasets.push({
+    type: 'bar' as const,
+    label: 'Post-switch (12m)',
+    data: sweep.entries.map((e) => e.post_switch_cost),
+    backgroundColor: sweep.entries.map((_, i) => hi(POST_SWITCH_COLOR, i)),
+    stack: 'cost',
+  })
+
+  if (totalCostMode.value) {
+    datasets.push({
+      type: 'bar' as const,
+      label: `Post-expiry (${postExpiryRateCents.value}¢/kWh est.)`,
+      data: sweep.entries.map((e) => computePostExpiryCost(e)),
+      backgroundColor: sweep.entries.map((_, i) => hi(POST_EXPIRY_COLOR, i)),
+      stack: 'cost',
+    })
+  }
+
+  if (varSweep) {
+    const baselineData = totalCostMode.value
+      ? varSweep.entries.map((e) => e.total_cost + computePostExpiryCost(e))
+      : varSweep.entries.map((e) => e.post_switch_cost)
     datasets.push({
       type: 'line' as const,
       label: 'Baseline (variable)',
-      data: variableSweep.entries.map((e) => e.total_cost),
+      data: baselineData,
       borderColor: '#6b7280',
       backgroundColor: 'transparent',
       borderDash: [5, 4],
@@ -609,8 +645,36 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                 <tr v-if="sweep.strategy_id === selectedStrategyId" :key="sweep.strategy_id + '-breakdown'">
                   <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
 
+                    <!-- Cost mode toggle -->
+                    <div class="px-4 pt-3 pb-2 flex items-center gap-3 flex-wrap">
+                      <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+                        <button
+                          @click.stop="totalCostMode = false"
+                          :class="['px-3 py-1.5 transition-colors', !totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
+                        >Post-switch only</button>
+                        <button
+                          @click.stop="totalCostMode = true"
+                          :class="['px-3 py-1.5 transition-colors border-l border-gray-300', totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
+                        >Total cost considered</button>
+                      </div>
+                      <template v-if="totalCostMode">
+                        <label class="flex items-center gap-1.5 text-xs text-gray-500">
+                          Post-expiry rate:
+                          <input
+                            v-model.number="postExpiryRateCents"
+                            type="number"
+                            step="0.5"
+                            min="0"
+                            @click.stop
+                            class="w-20 border border-gray-300 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          />
+                          <span class="text-gray-400">¢/kWh</span>
+                        </label>
+                      </template>
+                    </div>
+
                     <!-- Offset selector tabs -->
-                    <div class="px-4 pt-3 pb-1 flex items-center gap-1 flex-wrap">
+                    <div class="px-4 pb-1 flex items-center gap-1 flex-wrap">
                       <span class="text-xs text-gray-500 mr-2">Entry date:</span>
                       <button
                         v-for="(entry, idx) in sweep.entries"
@@ -630,18 +694,26 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     </div>
 
                     <!-- Cost summary row -->
-                    <div v-if="selectedEntry" class="px-4 py-2 flex items-center gap-6 text-xs text-gray-600 border-b border-blue-100">
+                    <div v-if="selectedEntry" class="px-4 py-2 flex items-center gap-6 text-xs text-gray-600 border-b border-blue-100 flex-wrap">
                       <span>Enter: <strong>{{ selectedEntry.window_start }}</strong></span>
-                      <template v-if="selectedEntry.pre_switch_cost > 0">
-                        <span>Pre-switch: <strong>${{ selectedEntry.pre_switch_cost.toFixed(2) }}</strong></span>
-                      </template>
-                      <template v-if="selectedEntry.etf_applied > 0">
-                        <span class="text-red-600">ETF: <strong>${{ selectedEntry.etf_applied.toFixed(2) }}</strong></span>
+                      <template v-if="totalCostMode">
+                        <template v-if="selectedEntry.pre_switch_cost > 0">
+                          <span>Pre-switch: <strong>${{ selectedEntry.pre_switch_cost.toFixed(2) }}</strong></span>
+                        </template>
+                        <template v-if="selectedEntry.etf_applied > 0">
+                          <span class="text-red-600">ETF: <strong>${{ selectedEntry.etf_applied.toFixed(2) }}</strong></span>
+                        </template>
                       </template>
                       <span>Post-switch (12m): <strong>${{ selectedEntry.post_switch_cost.toFixed(2) }}</strong></span>
-                      <span>Total: <strong>${{ selectedEntry.total_cost.toFixed(2) }}</strong></span>
-                      <span :class="selectedEntry.savings_vs_baseline >= 0 ? 'text-green-700' : 'text-red-600'">
-                        vs baseline: <strong>{{ selectedEntry.savings_vs_baseline >= 0 ? '+' : '' }}${{ selectedEntry.savings_vs_baseline.toFixed(2) }}</strong>
+                      <template v-if="totalCostMode">
+                        <span class="text-orange-600">Post-expiry (est.): <strong>${{ selectedEntryPostExpiryCost.toFixed(2) }}</strong></span>
+                        <span>Total: <strong>${{ (selectedEntry.total_cost + selectedEntryPostExpiryCost).toFixed(2) }}</strong></span>
+                      </template>
+                      <template v-else>
+                        <span>Total (12m): <strong>${{ selectedEntry.post_switch_cost.toFixed(2) }}</strong></span>
+                      </template>
+                      <span :class="selectedEntrySavings >= 0 ? 'text-green-700' : 'text-red-600'">
+                        vs baseline: <strong>{{ selectedEntrySavings >= 0 ? '+' : '' }}${{ selectedEntrySavings.toFixed(2) }}</strong>
                       </span>
                     </div>
 
