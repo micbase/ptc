@@ -225,91 +225,70 @@ const selectedSweep = computed<StrategySweep | null>(() =>
   sweeps.value.find((s) => s.strategy_id === selectedStrategyId.value) ?? null
 )
 
-// ── Baseline entry (variable plan, same offset as selected) ──────────────────
-const baselineEntry = computed<SweepEntry | null>(() => {
-  const variableSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
-  if (!variableSweep) return null
-  const idx = selectedOffset.value ?? selectedSweep.value?.best_entry_index ?? 0
-  return variableSweep.entries[idx] ?? null
-})
-
 // ── Breakdown stacked bar chart ───────────────────────────────────────────────
 const breakdownChartData = computed(() => {
-  const entry = selectedEntry.value
   const sweep = selectedSweep.value
-  if (!entry || !sweep) return { labels: [], datasets: [] }
+  if (!sweep) return { labels: [], datasets: [] }
 
   const strategyColor = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
+  const activeBestIdx = sweep.best_entry_index
+  const activeIdx = selectedOffset.value ?? activeBestIdx
 
-  const periodLabels = entry.period_breakdown.map((pb) => pb.period)
-  const hasPreSwitch = entry.pre_switch_cost > 0 || entry.etf_applied > 0
-  const labels = hasPreSwitch ? ['Pre-switch', ...periodLabels] : periodLabels
-  const n = labels.length
-  const offset = hasPreSwitch ? 1 : 0
+  const labels = sweep.entries.map((e, i) => (i === 0 ? 'Now' : `+${e.weeks_from_today}w`))
 
-  // Pre-switch cost segment
-  const preSwitchData = new Array(n).fill(0)
-  if (hasPreSwitch) preSwitchData[0] = entry.pre_switch_cost
+  const variableSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
 
-  // ETF segment
-  const etfData = new Array(n).fill(0)
-  if (hasPreSwitch && entry.etf_applied > 0) etfData[0] = entry.etf_applied
+  // Per-entry stacked segments
+  const preSwitchData = sweep.entries.map((e) => e.pre_switch_cost)
+  const etfData = sweep.entries.map((e) => e.etf_applied)
+  const postSwitchData = sweep.entries.map((e) => e.post_switch_cost)
 
-  // Post-switch per-period costs
-  const postSwitchData = new Array(n).fill(0)
-  entry.period_breakdown.forEach((pb, i) => {
-    postSwitchData[offset + i] = pb.period_cost
-  })
-
-  // Baseline line (variable plan at same entry offset)
-  const baseline = baselineEntry.value
-  const baselineLineData: (number | null)[] = new Array(n).fill(null)
-  if (baseline) {
-    if (hasPreSwitch) {
-      baselineLineData[0] = baseline.pre_switch_cost + baseline.etf_applied
-    }
-    baseline.period_breakdown.forEach((pb, i) => {
-      if (offset + i < n) baselineLineData[offset + i] = pb.period_cost
-    })
-  }
+  // Highlight the selected bar with full opacity; others dimmed
+  const postSwitchColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? strategyColor : hexToRgba(strategyColor, 0.35)
+  )
+  const preSwitchColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? '#9ca3af' : 'rgba(156,163,175,0.35)'
+  )
+  const etfColors = sweep.entries.map((_, i) =>
+    i === activeIdx ? '#ef4444' : 'rgba(239,68,68,0.35)'
+  )
 
   const datasets: any[] = [
     {
       type: 'bar' as const,
       label: 'Pre-switch',
       data: preSwitchData,
-      backgroundColor: '#9ca3af',
+      backgroundColor: preSwitchColors,
       stack: 'cost',
     },
     {
       type: 'bar' as const,
       label: 'ETF',
       data: etfData,
-      backgroundColor: '#ef4444',
+      backgroundColor: etfColors,
       stack: 'cost',
     },
     {
       type: 'bar' as const,
       label: 'Post-switch',
       data: postSwitchData,
-      backgroundColor: hexToRgba(strategyColor, 0.75),
-      borderColor: strategyColor,
-      borderWidth: 1,
+      backgroundColor: postSwitchColors,
       stack: 'cost',
     },
   ]
 
-  if (baseline) {
+  if (variableSweep) {
     datasets.push({
       type: 'line' as const,
       label: 'Baseline (variable)',
-      data: baselineLineData,
+      data: variableSweep.entries.map((e) => e.total_cost),
       borderColor: '#6b7280',
       backgroundColor: 'transparent',
       borderDash: [5, 4],
       pointRadius: 3,
       pointHoverRadius: 5,
-      tension: 0,
+      tension: 0.15,
       order: -1,
     })
   }
@@ -317,36 +296,50 @@ const breakdownChartData = computed(() => {
   return { labels, datasets }
 })
 
-const breakdownChartOptions = computed(() => ({
-  responsive: true,
-  maintainAspectRatio: false,
-  scales: {
-    x: {
-      stacked: true,
-      title: { display: false },
-      ticks: { maxRotation: 0 },
-    },
-    y: {
-      stacked: true,
-      title: { display: true, text: 'Cost ($)' },
-      ticks: {
-        callback: (v: number | string) => `$${Number(v).toFixed(0)}`,
+const breakdownChartOptions = computed(() => {
+  const sweep = selectedSweep.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    scales: {
+      x: {
+        stacked: true,
+        ticks: { maxRotation: 0 },
       },
-    },
-  },
-  plugins: {
-    legend: { position: 'top' as const },
-    tooltip: {
-      callbacks: {
-        label: (ctx: any) => {
-          const val = ctx.raw as number
-          if (!val) return null
-          return `${ctx.dataset.label}: $${val.toFixed(2)}`
+      y: {
+        stacked: true,
+        title: { display: true, text: 'Total cost ($)' },
+        ticks: {
+          callback: (v: number | string) => `$${Number(v).toFixed(0)}`,
         },
       },
     },
-  },
-}))
+    plugins: {
+      legend: { position: 'top' as const },
+      tooltip: {
+        callbacks: {
+          title: (items: any[]) => {
+            const idx = items[0]?.dataIndex ?? 0
+            const entry = sweep?.entries[idx]
+            const label = idx === 0 ? 'Now' : `+${entry?.weeks_from_today}w`
+            return entry ? `${label} — enter ${entry.window_start}` : label
+          },
+          label: (ctx: any) => {
+            const val = ctx.raw as number
+            if (!val) return null
+            return `${ctx.dataset.label}: $${val.toFixed(2)}`
+          },
+        },
+      },
+    },
+    onClick: (_event: any, elements: any[]) => {
+      if (elements.length > 0) {
+        const idx = elements[0].index
+        selectedOffset.value = idx
+      }
+    },
+  }
+})
 
 // ── Strategy best-entry summary table ────────────────────────────────────────
 function onRowClick(strategyId: string) {
