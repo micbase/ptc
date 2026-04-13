@@ -96,7 +96,7 @@ const selectedOffset = ref<number | null>(null)
 const offsetLabels = computed(() => {
   if (sweeps.value.length === 0) return []
   return sweeps.value[0].entries.map((e, i) =>
-    i === 0 ? 'Now' : `+${i}m`
+    i === 0 ? 'Now' : `+${e.weeks_from_today}w`
   )
 })
 
@@ -454,7 +454,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     </div>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-700">
-                    {{ sweep.best_entry_index === 0 ? 'Now' : `+${sweep.best_entry_index}m` }}
+                    {{ sweep.best_entry_index === 0 ? 'Now' : `+${sweep.entries[sweep.best_entry_index].weeks_from_today}w` }}
                     <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[sweep.best_entry_index].window_start }})</span>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-600">
@@ -504,7 +504,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                           idx === sweep.best_entry_index ? 'font-bold' : '',
                         ]"
                       >
-                        {{ idx === 0 ? 'Now' : `+${idx}m` }}
+                        {{ idx === 0 ? 'Now' : `+${entry.weeks_from_today}w` }}
                         <span v-if="idx === sweep.best_entry_index" class="ml-0.5">★</span>
                       </button>
                     </div>
