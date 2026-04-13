@@ -190,13 +190,20 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	// Phase 2: historical range — always runs, overrides if cheaper.
 	// When decisionDate == today the range is inverted (histStart > histEnd) so
 	// today's live plans (phase 1) are the sole source.
+	//
+	// yearsBack: subtract enough years so histEnd lands before today.
+	// For decisionDates 2+ years out, -1 year is still in the future.
+	yearsBack := 1
+	for !decisionDate.AddDate(-yearsBack, 0, 0).Before(pc.today) {
+		yearsBack++
+	}
 	var histStart, histEnd time.Time
 	if inEnrollmentWindow {
-		histStart = pc.today.AddDate(-1, 0, 1)
-		histEnd = decisionDate.AddDate(-1, 0, 0)
+		histStart = pc.today.AddDate(-yearsBack, 0, 1)
+		histEnd = decisionDate.AddDate(-yearsBack, 0, 0)
 	} else {
-		histStart = decisionDate.AddDate(-1, 0, -30)
-		histEnd = decisionDate.AddDate(-1, 0, 0)
+		histStart = decisionDate.AddDate(-yearsBack, 0, -30)
+		histEnd = decisionDate.AddDate(-yearsBack, 0, 0)
 	}
 	if histStart.Before(histEnd) {
 		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
