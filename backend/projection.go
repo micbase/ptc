@@ -221,24 +221,37 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		isFallback := false
 		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
 		if histPlan == nil {
-			// Fallback: no data in ideal window — use the most recent date that has
-			// at least one plan with a matching term.
+			// Fallback: no data in ideal window.
 			isFallback = true
-			var latestDate time.Time
-			for dateStr, candidates := range pc.allPlans {
-				fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-				if parseErr != nil {
-					continue
-				}
-				for _, r := range candidates {
-					if r.TermValue == termMonths && fetchDate.After(latestDate) {
-						latestDate = fetchDate
-						break
+
+			// Special case: if histEnd falls in the May 1 – June 11 gap, use the
+			// best plan from June of that same year as the fallback source.
+			histEndMD := int(histEnd.Month())*100 + histEnd.Day()
+			if histEndMD >= 501 && histEndMD <= 611 {
+				juneStart := time.Date(histEnd.Year(), time.June, 1, 0, 0, 0, 0, time.UTC)
+				juneEnd := time.Date(histEnd.Year(), time.June, 30, 0, 0, 0, 0, time.UTC)
+				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
+			}
+
+			if histPlan == nil {
+				// General fallback: use the most recent date that has at least one
+				// plan with a matching term.
+				var latestDate time.Time
+				for dateStr, candidates := range pc.allPlans {
+					fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+					if parseErr != nil {
+						continue
+					}
+					for _, r := range candidates {
+						if r.TermValue == termMonths && fetchDate.After(latestDate) {
+							latestDate = fetchDate
+							break
+						}
 					}
 				}
-			}
-			if !latestDate.IsZero() {
-				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+				if !latestDate.IsZero() {
+					histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+				}
 			}
 		}
 		if histPlan != nil {
