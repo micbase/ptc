@@ -265,8 +265,6 @@ const breakdownChartData = computed(() => {
 
   const labels = sweep.entries.map((e, i) => (i === 0 ? 'Now' : `+${e.weeks_from_today}w`))
 
-  const varSweep = sweeps.value.find((s) => s.strategy_id === 'variable')
-
   // Color constants (fixed across all strategies)
   const POST_SWITCH_COLOR = '#10b981' // emerald
   const PRE_SWITCH_COLOR = '#9ca3af'  // gray
@@ -309,24 +307,6 @@ const breakdownChartData = computed(() => {
       data: sweep.entries.map((e) => computePostExpiryCost(e)),
       backgroundColor: sweep.entries.map((_, i) => hi(POST_EXPIRY_COLOR, i)),
       stack: 'cost',
-    })
-  }
-
-  if (varSweep) {
-    const baselineData = totalCostMode.value
-      ? varSweep.entries.map((e) => e.total_cost + computePostExpiryCost(e))
-      : varSweep.entries.map((e) => e.post_switch_cost)
-    datasets.push({
-      type: 'line' as const,
-      label: 'Baseline (variable)',
-      data: baselineData,
-      borderColor: '#6b7280',
-      backgroundColor: 'transparent',
-      borderDash: [5, 4],
-      pointRadius: 3,
-      pointHoverRadius: 5,
-      tension: 0.15,
-      order: -1,
     })
   }
 
