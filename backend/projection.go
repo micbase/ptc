@@ -123,14 +123,17 @@ func (pc *projectionContext) dateToPeriod(d time.Time) string {
 
 // bestPlanInRange finds the cheapest plan within the inclusive date range [start, end]
 // with the given term. Only plans whose TermValue matches termMonths are considered.
-// Returns nil if no matching plan is found in the range.
+// Returns (nil, zero) if no matching plan is found in the range.
+// The second return value is the fetch date of the winning plan, which callers can
+// use to determine how long that plan remains in a sliding historical window.
 func (pc *projectionContext) bestPlanInRange(
 	termMonths int,
 	numCoveredPeriods int, totalUsage float64,
 	start, end time.Time,
-) *Plan {
+) (*Plan, time.Time) {
 	bestCost := math.MaxFloat64
 	var best *Plan
+	var bestFetchDate time.Time
 	for dateStr, candidates := range pc.allPlans {
 		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
 		if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
@@ -145,10 +148,11 @@ func (pc *projectionContext) bestPlanInRange(
 			if cost < bestCost {
 				bestCost = cost
 				best = r
+				bestFetchDate = fetchDate
 			}
 		}
 	}
-	return best
+	return best, bestFetchDate
 }
 
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
@@ -189,7 +193,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 
 	// Phase 1: today's live plans — only within the 30-day enrollment window.
 	if inEnrollmentWindow {
-		if p := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, pc.today, pc.today); p != nil {
+		if p, _ := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, pc.today, pc.today); p != nil {
 			cost := float64(numTermPeriods)*p.BaseFee + termUsage*p.PerKwhRate/100.0
 			if cost < bestCost {
 				bestCost = cost
@@ -219,7 +223,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	}
 	if histStart.Before(histEnd) {
 		isFallback := false
-		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
+		histPlan, _ := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
 		if histPlan == nil {
 			// Fallback: no data in ideal window.
 			isFallback = true
@@ -230,7 +234,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			if histEndMD >= 501 && histEndMD <= 611 {
 				juneStart := time.Date(histEnd.Year(), time.June, 1, 0, 0, 0, 0, time.UTC)
 				juneEnd := time.Date(histEnd.Year(), time.June, 30, 0, 0, 0, 0, time.UTC)
-				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
+				histPlan, _ = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
 			}
 
 			if histPlan == nil {
@@ -250,7 +254,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 					}
 				}
 				if !latestDate.IsZero() {
-					histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+					histPlan, _ = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
 				}
 			}
 		}
@@ -477,64 +481,78 @@ func newProjectionContext(
 	}, nil
 }
 
-// withActionDate returns a shallow copy of the projectionContext with today replaced
-// by actionDate. The usageMap, allPlans, and period bounds are shared (not re-queried).
-// Safe for action dates within ~30 days of the original today, since historical period
-// starts used for usage lookups do not change meaningfully over that window.
-func (pc *projectionContext) withActionDate(actionDate time.Time) *projectionContext {
-	clone := *pc
-	clone.today = actionDate
-	return &clone
-}
-
 // computeActionDateRange determines the range of action dates (sign-up dates) within
-// the 30-day enrollment window that yield the minimum post-switch cost for the given
-// contract start date. pc must be the projectionContext anchored at bestStart.
-// Returns (actionDateStart, actionDateEnd) as "YYYY-MM-DD" strings.
-func computeActionDateRange(today, bestStart time.Time, pc *projectionContext, spec strategySpec, etf float64) (string, string) {
-	rawStart := bestStart.AddDate(0, 0, -30)
-	if rawStart.Before(today) {
-		rawStart = today
+// the 30-day enrollment window that keep the winning historical plan in the Phase 2
+// lookup window. pc must be the projectionContext anchored at bestStart.
+//
+// The Phase 2 historical window for action date D is:
+//
+//	histStart = D.AddDate(-yearsBack, 0, 1)   histEnd = bestStart.AddDate(-yearsBack, 0, 0)
+//
+// The plan found at fetchDate stays in that window while fetchDate >= histStart, i.e.
+// while D <= fetchDate.AddDate(+yearsBack, 0, -1). That upper bound is the action
+// date deadline; the lower bound is max(today, bestStart−30).
+//
+// firstSwitchTerm is the contract term (months) used for the first switch in this
+// strategy, used to query the historical plan.
+func computeActionDateRange(today, bestStart time.Time, pc *projectionContext, firstSwitchTerm int) (string, string) {
+	actionStart := bestStart.AddDate(0, 0, -30)
+	if actionStart.Before(today) {
+		actionStart = today
 	}
 
-	type dayResult struct {
-		date     time.Time
-		postCost float64
+	// Mirror the Phase 2 window logic from selectBestPlan.
+	yearsBack := 1
+	for !bestStart.AddDate(-yearsBack, 0, 0).Before(today) {
+		yearsBack++
+	}
+	inEnrollmentWindow := !today.Before(bestStart.AddDate(0, 0, -30))
+	var histStart, histEnd time.Time
+	if inEnrollmentWindow {
+		histStart = today.AddDate(-yearsBack, 0, 1)
+		histEnd = bestStart.AddDate(-yearsBack, 0, 0)
+	} else {
+		histStart = bestStart.AddDate(-yearsBack, 0, -30)
+		histEnd = bestStart.AddDate(-yearsBack, 0, 0)
 	}
 
-	var results []dayResult
-	minCost := math.MaxFloat64
+	if !histStart.Before(histEnd) {
+		// No historical window (decisionDate == today or inverted): full raw window.
+		return actionStart.Format("2006-01-02"), bestStart.Format("2006-01-02")
+	}
 
-	for d := rawStart; !d.After(bestStart); d = d.AddDate(0, 0, 1) {
-		pcD := pc.withActionDate(d)
-		segments, _ := pcD.buildGreedyRolling(spec.termOptions, spec.fallback, etf, bestStart)
-		_, postCost := pcD.buildBreakdown(segments)
-		rc := round2(postCost)
-		results = append(results, dayResult{d, rc})
-		if rc < minCost {
-			minCost = rc
+	// Compute usage coverage for this term (mirrors selectBestPlan).
+	termEnd := bestStart.AddDate(0, firstSwitchTerm, 0)
+	termUsage, numTermPeriods := 0.0, 0
+	for j := 0; j < pc.numPeriods; j++ {
+		if !periodCoversSegment(pc.periodStarts[j], pc.periodStarts[j+1], bestStart, termEnd) {
+			continue
 		}
+		usageKwh, _ := pc.usageForPeriod(j)
+		termUsage += usageKwh
+		numTermPeriods++
+	}
+	if numTermPeriods == 0 {
+		numTermPeriods = firstSwitchTerm
 	}
 
-	if len(results) == 0 {
-		return rawStart.Format("2006-01-02"), bestStart.Format("2006-01-02")
+	_, fetchDate := pc.bestPlanInRange(firstSwitchTerm, numTermPeriods, termUsage, histStart, histEnd)
+	if fetchDate.IsZero() {
+		// No historical data found; fall back to the full enrollment window.
+		return actionStart.Format("2006-01-02"), bestStart.Format("2006-01-02")
 	}
 
-	// Find earliest and latest dates achieving (near-)minimum cost ($0.01 tolerance).
-	first := bestStart
-	last := rawStart
-	for _, r := range results {
-		if r.postCost <= minCost+0.01 {
-			if r.date.Before(first) {
-				first = r.date
-			}
-			if r.date.After(last) {
-				last = r.date
-			}
-		}
+	// Latest action date: fetchDate must remain >= histStart for action date D.
+	// histStart(D) = D.AddDate(-yearsBack, 0, 1)  →  D ≤ fetchDate.AddDate(+yearsBack, 0, −1)
+	actionEnd := fetchDate.AddDate(yearsBack, 0, -1)
+	if actionEnd.After(bestStart) {
+		actionEnd = bestStart
+	}
+	if actionEnd.Before(actionStart) {
+		actionEnd = actionStart
 	}
 
-	return first.Format("2006-01-02"), last.Format("2006-01-02")
+	return actionStart.Format("2006-01-02"), actionEnd.Format("2006-01-02")
 }
 
 // strategySpec describes one sweep strategy.
@@ -650,15 +668,23 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 		}
 		sweep.BestEntryIndexPostSwitch = bestIdxPost
 
-		// Compute action date ranges: for each best entry, find the sub-window of the
-		// 30-day enrollment period where signing up yields the minimum post-switch cost.
+		// Compute action date ranges: find the sub-window of the 30-day enrollment
+		// period during which signing up keeps the winning historical plan in scope.
+		// Use the first switch's term from the already-computed sweep entries.
+		firstSwitchTerm := func(idx int) int {
+			if len(sweep.Entries[idx].Switches) > 0 {
+				return sweep.Entries[idx].Switches[0].Plan.TermValue
+			}
+			return spec.fallback
+		}
+
 		bestStart := today.AddDate(0, 0, bestIdx*14)
 		sweep.ActionDateStart, sweep.ActionDateEnd = computeActionDateRange(
-			today, bestStart, pcs[bestIdx], spec, etfForWindowStart(bestStart),
+			today, bestStart, pcs[bestIdx], firstSwitchTerm(bestIdx),
 		)
 		bestStartPost := today.AddDate(0, 0, bestIdxPost*14)
 		sweep.ActionDateStartPostSwitch, sweep.ActionDateEndPostSwitch = computeActionDateRange(
-			today, bestStartPost, pcs[bestIdxPost], spec, etfForWindowStart(bestStartPost),
+			today, bestStartPost, pcs[bestIdxPost], firstSwitchTerm(bestIdxPost),
 		)
 
 		sweeps[si] = sweep
