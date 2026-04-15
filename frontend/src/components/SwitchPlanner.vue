@@ -147,6 +147,12 @@ const recommendation = computed(() => {
   if (savings > 0) msg += `, saves $${savings.toFixed(0)} vs variable baseline`
   if (etf > 0) msg += ` (includes $${etf.toFixed(0)} ETF)`
   else if (months > 0) msg += ` — no ETF`
+  const as = b.entry.action_date_start
+  const ae = b.entry.action_date_end
+  if (as && ae) {
+    if (as === ae) msg += ` · enroll by ${as}`
+    else msg += ` · enroll ${as} – ${ae}`
+  }
   return msg
 })
 
@@ -564,7 +570,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
             <thead>
               <tr class="bg-gray-50 text-gray-500 text-xs uppercase">
                 <th class="text-left px-4 py-3 font-medium">Strategy</th>
-                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Best Entry</th>
+                <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Best Entry / Enroll By</th>
                 <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Pre-switch</th>
                 <th class="text-right px-4 py-3 font-medium whitespace-nowrap">ETF</th>
                 <th class="text-right px-4 py-3 font-medium whitespace-nowrap">Post-switch (12m)</th>
@@ -599,6 +605,15 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                   <td class="px-4 py-3 text-right tabular-nums text-gray-700">
                     {{ effectiveBestIndex(sweep) === 0 ? 'Now' : `+${sweep.entries[effectiveBestIndex(sweep)].weeks_from_today}w` }}
                     <span class="text-xs text-gray-400 ml-1">({{ sweep.entries[effectiveBestIndex(sweep)].window_start }})</span>
+                    <template v-if="sweep.entries[effectiveBestIndex(sweep)].action_date_start">
+                      <br>
+                      <span class="text-xs text-blue-600">
+                        enroll
+                        {{ sweep.entries[effectiveBestIndex(sweep)].action_date_start === sweep.entries[effectiveBestIndex(sweep)].action_date_end
+                          ? `by ${sweep.entries[effectiveBestIndex(sweep)].action_date_start}`
+                          : `${sweep.entries[effectiveBestIndex(sweep)].action_date_start} – ${sweep.entries[effectiveBestIndex(sweep)].action_date_end}` }}
+                      </span>
+                    </template>
                   </td>
                   <td class="px-4 py-3 text-right tabular-nums text-gray-600">
                     {{ sweep.entries[effectiveBestIndex(sweep)].pre_switch_cost > 0

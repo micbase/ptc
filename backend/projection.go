@@ -121,14 +121,23 @@ func (pc *projectionContext) dateToPeriod(d time.Time) string {
 	return periodLabel(pc.numPeriods)
 }
 
+// planSearchResult is the output of bestPlanInRange: the cheapest plan found plus the
+// date sub-range within [start, end] where that specific plan (by ID) appeared.
+type planSearchResult struct {
+	plan      *Plan
+	dateStart time.Time // earliest fetch_date in [start,end] where plan appeared
+	dateEnd   time.Time // latest fetch_date in [start,end] where plan appeared
+}
+
 // bestPlanInRange finds the cheapest plan within the inclusive date range [start, end]
 // with the given term. Only plans whose TermValue matches termMonths are considered.
 // Returns nil if no matching plan is found in the range.
+// The returned planSearchResult also carries the date sub-range where that plan appeared.
 func (pc *projectionContext) bestPlanInRange(
 	termMonths int,
 	numCoveredPeriods int, totalUsage float64,
 	start, end time.Time,
-) *Plan {
+) *planSearchResult {
 	bestCost := math.MaxFloat64
 	var best *Plan
 	for dateStr, candidates := range pc.allPlans {
@@ -148,24 +157,55 @@ func (pc *projectionContext) bestPlanInRange(
 			}
 		}
 	}
-	return best
+	if best == nil {
+		return nil
+	}
+	// Second pass: find date sub-range where this exact plan (by ID) appeared in [start, end].
+	var dateStart, dateEnd time.Time
+	for dateStr, candidates := range pc.allPlans {
+		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
+		if parseErr != nil || fetchDate.Before(start) || fetchDate.After(end) {
+			continue
+		}
+		for _, r := range candidates {
+			if r.ElectricityRateID == best.ElectricityRateID {
+				if dateStart.IsZero() || fetchDate.Before(dateStart) {
+					dateStart = fetchDate
+				}
+				if fetchDate.After(dateEnd) {
+					dateEnd = fetchDate
+				}
+				break
+			}
+		}
+	}
+	return &planSearchResult{plan: best, dateStart: dateStart, dateEnd: dateEnd}
+}
+
+// planSelection is the output of selectBestPlan: the chosen plan plus the window of
+// dates during which enrollment should occur to obtain this plan.
+type planSelection struct {
+	Plan        Plan      // the selected plan (with planKind set)
+	ActionStart time.Time // earliest date to enroll (inclusive)
+	ActionEnd   time.Time // latest date to enroll (inclusive)
 }
 
 // selectBestPlan finds the cheapest plan for decisionDate with the given term.
 // termMonths == 1 selects variable plans; termMonths > 1 selects fixed plans.
 //
 // Phase 1 (within the 30-day enrollment window): searches today's plans via
-// bestPlanInRange(today, today).
+// bestPlanInRange(today, today). ActionWindow = [today, decisionDate].
 //
 // Phase 2 (always runs, overrides if cheaper): searches a historical range
 // anchored one year before decisionDate. Within the enrollment window the range
 // is [today−1yr+1d, decisionDate−1yr]; outside it is [decisionDate−1yr−30d,
-// decisionDate−1yr]. Falls back to the most recent available date when no data
-// exists in the ideal window.
+// decisionDate−1yr]. The historical date sub-range where the winning plan appeared
+// is shifted forward by yearsBack years (clamped to [today, decisionDate]) to
+// produce the ActionWindow. Falls back to the most recent available date when no
+// data exists in the ideal window.
 //
-// Returns nil if no data exists from either source. The returned Plan copy has
-// isActual set appropriately.
-func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *Plan {
+// Returns nil if no data exists from either source.
+func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Time) *planSelection {
 	termEnd := decisionDate.AddDate(0, termMonths, 0)
 
 	termUsage, numTermPeriods := 0.0, 0
@@ -184,17 +224,21 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	bestCost := math.MaxFloat64
 	var bestPlan *Plan
 	bestKind := PlanKindProjected
+	var bestActionStart, bestActionEnd time.Time
 
 	inEnrollmentWindow := !pc.today.Before(decisionDate.AddDate(0, 0, -30))
 
 	// Phase 1: today's live plans — only within the 30-day enrollment window.
 	if inEnrollmentWindow {
-		if p := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, pc.today, pc.today); p != nil {
-			cost := float64(numTermPeriods)*p.BaseFee + termUsage*p.PerKwhRate/100.0
+		if res := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, pc.today, pc.today); res != nil {
+			cost := float64(numTermPeriods)*res.plan.BaseFee + termUsage*res.plan.PerKwhRate/100.0
 			if cost < bestCost {
 				bestCost = cost
-				bestPlan = p
+				bestPlan = res.plan
 				bestKind = PlanKindActual
+				// Entire enrollment window is open for actual plans.
+				bestActionStart = pc.today
+				bestActionEnd = decisionDate
 			}
 		}
 	}
@@ -219,8 +263,8 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	}
 	if histStart.Before(histEnd) {
 		isFallback := false
-		histPlan := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
-		if histPlan == nil {
+		histRes := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
+		if histRes == nil {
 			// Fallback: no data in ideal window.
 			isFallback = true
 
@@ -230,10 +274,10 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 			if histEndMD >= 501 && histEndMD <= 611 {
 				juneStart := time.Date(histEnd.Year(), time.June, 1, 0, 0, 0, 0, time.UTC)
 				juneEnd := time.Date(histEnd.Year(), time.June, 30, 0, 0, 0, 0, time.UTC)
-				histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
+				histRes = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
 			}
 
-			if histPlan == nil {
+			if histRes == nil {
 				// General fallback: use the most recent date that has at least one
 				// plan with a matching term.
 				var latestDate time.Time
@@ -250,20 +294,36 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 					}
 				}
 				if !latestDate.IsZero() {
-					histPlan = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
+					histRes = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
 				}
 			}
 		}
-		if histPlan != nil {
-			histCost := float64(numTermPeriods)*histPlan.BaseFee + termUsage*histPlan.PerKwhRate/100.0
+		if histRes != nil {
+			histCost := float64(numTermPeriods)*histRes.plan.BaseFee + termUsage*histRes.plan.PerKwhRate/100.0
 			if histCost < bestCost {
 				bestCost = histCost
-				bestPlan = histPlan
+				bestPlan = histRes.plan
 				if isFallback {
 					bestKind = PlanKindFallback
 				} else {
 					bestKind = PlanKindProjected
 				}
+				// Shift the historical date sub-range forward by yearsBack years to
+				// produce the action window; clamp to [today, decisionDate].
+				aStart := histRes.dateStart.AddDate(yearsBack, 0, 0)
+				aEnd := histRes.dateEnd.AddDate(yearsBack, 0, 0)
+				if aStart.Before(pc.today) {
+					aStart = pc.today
+				}
+				if aEnd.After(decisionDate) {
+					aEnd = decisionDate
+				}
+				if aStart.After(aEnd) {
+					aStart = pc.today
+					aEnd = pc.today
+				}
+				bestActionStart = aStart
+				bestActionEnd = aEnd
 			}
 		}
 	}
@@ -275,7 +335,7 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 	// Return a copy with planKind stamped in.
 	result := *bestPlan
 	result.planKind = bestKind
-	return &result
+	return &planSelection{Plan: result, ActionStart: bestActionStart, ActionEnd: bestActionEnd}
 }
 
 // buildBreakdown computes per-period costs for the given plan segments.
@@ -323,49 +383,56 @@ func (pc *projectionContext) buildBreakdown(segments []planSegment) ([]PeriodBre
 // termOptions: terms to evaluate (by cost-per-period over the remaining window).
 // fallbackTerm: used if no plan is found for any preferred term (0 = no fallback / stop).
 // initialETF: charged at the first switch only.
-func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm int, initialETF float64, firstDecisionDate time.Time) ([]planSegment, []SwitchEvent) {
+// Returns segments, switches, and the action window (start/end) from the first decision.
+func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm int, initialETF float64, firstDecisionDate time.Time) ([]planSegment, []SwitchEvent, time.Time, time.Time) {
 	var segments []planSegment
 	var switches []SwitchEvent
-	isFirst := true
+	isFirstIter := true
+	var firstActionStart, firstActionEnd time.Time
 
 	decisionDate := pc.windowStart
 	for decisionDate.Before(pc.windowEnd) {
 		selectDate := decisionDate
 		etf := 0.0
-		if isFirst {
+		if isFirstIter {
 			selectDate = firstDecisionDate
 			etf = initialETF
-			isFirst = false
 		}
 
 		bestCostPerPeriod := math.MaxFloat64
-		var bestPlanRes *Plan
+		var bestSel *planSelection
 		bestTermMonths := 0
 
 		for _, termMonths := range termOptions {
-			planRes := pc.selectBestPlan(termMonths, selectDate)
-			if planRes == nil {
+			sel := pc.selectBestPlan(termMonths, selectDate)
+			if sel == nil {
 				continue
 			}
-			totalCost, periodsCovered := pc.costForDateRange(*planRes, decisionDate, pc.windowEnd)
+			totalCost, periodsCovered := pc.costForDateRange(sel.Plan, decisionDate, pc.windowEnd)
 			if periodsCovered <= 0 {
 				continue
 			}
 			costPerPeriod := totalCost / float64(periodsCovered)
 			if costPerPeriod < bestCostPerPeriod {
 				bestCostPerPeriod = costPerPeriod
-				bestPlanRes = planRes
+				bestSel = sel
 				bestTermMonths = termMonths
 			}
 		}
 
 		// Fallback if no preferred term is available.
-		if bestPlanRes == nil && fallbackTerm > 0 {
-			bestPlanRes = pc.selectBestPlan(fallbackTerm, selectDate)
+		if bestSel == nil && fallbackTerm > 0 {
+			bestSel = pc.selectBestPlan(fallbackTerm, selectDate)
 			bestTermMonths = fallbackTerm
 		}
-		if bestPlanRes == nil {
+		if bestSel == nil {
 			break
+		}
+
+		if isFirstIter {
+			firstActionStart = bestSel.ActionStart
+			firstActionEnd = bestSel.ActionEnd
+			isFirstIter = false
 		}
 
 		nextDate := decisionDate.AddDate(0, bestTermMonths, 0)
@@ -373,15 +440,15 @@ func (pc *projectionContext) buildGreedyRolling(termOptions []int, fallbackTerm 
 		if segEnd.After(pc.windowEnd) {
 			segEnd = pc.windowEnd
 		}
-		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: *bestPlanRes})
+		segments = append(segments, planSegment{start: decisionDate, end: segEnd, plan: bestSel.Plan})
 		switches = append(switches, SwitchEvent{
 			EffectivePeriod: pc.dateToPeriod(decisionDate),
 			ETFPaid:         etf,
-			Plan:            *bestPlanRes,
+			Plan:            bestSel.Plan,
 		})
 		decisionDate = nextDate
 	}
-	return segments, switches
+	return segments, switches, firstActionStart, firstActionEnd
 }
 
 // costForDateRange sums the projected cost for the given Plan over all
@@ -549,10 +616,19 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 				return nil, err
 			}
 
-			segments, switches := pc.buildGreedyRolling(spec.termOptions, spec.fallback, etf, windowStart)
+			segments, switches, actionStart, actionEnd := pc.buildGreedyRolling(spec.termOptions, spec.fallback, etf, windowStart)
 			breakdown, postCost := pc.buildBreakdown(segments)
 			if switches == nil {
 				switches = []SwitchEvent{}
+			}
+
+			actionDateStart := ""
+			actionDateEnd := ""
+			if !actionStart.IsZero() {
+				actionDateStart = actionStart.Format("2006-01-02")
+			}
+			if !actionEnd.IsZero() {
+				actionDateEnd = actionEnd.Format("2006-01-02")
 			}
 
 			sweep.Entries[offset] = SweepEntry{
@@ -565,6 +641,8 @@ func computeSweep(ctx context.Context, pool *pgxpool.Pool, req ProjectionRequest
 				PeriodBreakdown: breakdown,
 				Switches:        switches,
 				SwitchCount:     len(switches),
+				ActionDateStart: actionDateStart,
+				ActionDateEnd:   actionDateEnd,
 			}
 		}
 
