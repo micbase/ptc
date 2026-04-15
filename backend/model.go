@@ -90,6 +90,8 @@ type SweepEntry struct {
 	PeriodBreakdown   []PeriodBreakdown `json:"period_breakdown"`    // 12 periods anchored at windowStart
 	Switches          []SwitchEvent     `json:"switches"`
 	SwitchCount       int               `json:"switch_count"`
+	ActionDateStart   string            `json:"action_date_start"` // earliest date to enroll for first plan (YYYY-MM-DD)
+	ActionDateEnd     string            `json:"action_date_end"`   // latest date to enroll for first plan (YYYY-MM-DD)
 }
 
 // StrategySweep holds all 26 bi-weekly entry-date options for one strategy type.

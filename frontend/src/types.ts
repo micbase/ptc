@@ -123,6 +123,8 @@ export interface SweepEntry {
   period_breakdown: PeriodBreakdown[]
   switches: SwitchEvent[]
   switch_count: number
+  action_date_start: string   // earliest date to enroll for first plan ("YYYY-MM-DD")
+  action_date_end: string     // latest date to enroll for first plan ("YYYY-MM-DD")
 }
 
 // Sweep over 26 bi-weekly entry-date options for one strategy type.
