@@ -684,6 +684,14 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     <!-- Cost summary row -->
                     <div v-if="selectedEntry" class="px-4 py-2 flex items-center gap-6 text-xs text-gray-600 border-b border-blue-100 flex-wrap">
                       <span>Enter: <strong>{{ selectedEntry.window_start }}</strong></span>
+                      <span v-if="selectedEntry.action_date_start" class="text-blue-600">
+                        Enroll:
+                        <strong>{{
+                          selectedEntry.action_date_start === selectedEntry.action_date_end
+                            ? `by ${selectedEntry.action_date_start}`
+                            : `${selectedEntry.action_date_start} – ${selectedEntry.action_date_end}`
+                        }}</strong>
+                      </span>
                       <template v-if="totalCostMode">
                         <template v-if="selectedEntry.pre_switch_cost > 0">
                           <span>Pre-switch: <strong>${{ selectedEntry.pre_switch_cost.toFixed(2) }}</strong></span>
