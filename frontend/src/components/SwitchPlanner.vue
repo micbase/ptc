@@ -149,10 +149,7 @@ const recommendation = computed(() => {
   else if (months > 0) msg += ` — no ETF`
   const as = b.entry.action_date_start
   const ae = b.entry.action_date_end
-  if (as && ae) {
-    if (as === ae) msg += ` · enroll by ${as}`
-    else msg += ` · enroll ${as} – ${ae}`
-  }
+  if (as && ae) msg += ` · enroll ${as} – ${ae}`
   return msg
 })
 
@@ -608,10 +605,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     <template v-if="sweep.entries[effectiveBestIndex(sweep)].action_date_start">
                       <br>
                       <span class="text-xs text-blue-600">
-                        enroll
-                        {{ sweep.entries[effectiveBestIndex(sweep)].action_date_start === sweep.entries[effectiveBestIndex(sweep)].action_date_end
-                          ? `by ${sweep.entries[effectiveBestIndex(sweep)].action_date_start}`
-                          : `${sweep.entries[effectiveBestIndex(sweep)].action_date_start} – ${sweep.entries[effectiveBestIndex(sweep)].action_date_end}` }}
+                        enroll {{ sweep.entries[effectiveBestIndex(sweep)].action_date_start }} – {{ sweep.entries[effectiveBestIndex(sweep)].action_date_end }}
                       </span>
                     </template>
                   </td>
@@ -685,12 +679,7 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                     <div v-if="selectedEntry" class="px-4 py-2 flex items-center gap-6 text-xs text-gray-600 border-b border-blue-100 flex-wrap">
                       <span>Enter: <strong>{{ selectedEntry.window_start }}</strong></span>
                       <span v-if="selectedEntry.action_date_start" class="text-blue-600">
-                        Enroll:
-                        <strong>{{
-                          selectedEntry.action_date_start === selectedEntry.action_date_end
-                            ? `by ${selectedEntry.action_date_start}`
-                            : `${selectedEntry.action_date_start} – ${selectedEntry.action_date_end}`
-                        }}</strong>
+                        Enroll: <strong>{{ selectedEntry.action_date_start }} – {{ selectedEntry.action_date_end }}</strong>
                       </span>
                       <template v-if="totalCostMode">
                         <template v-if="selectedEntry.pre_switch_cost > 0">
