@@ -160,7 +160,10 @@ func (pc *projectionContext) bestPlanInRange(
 	if best == nil {
 		return nil
 	}
-	// Second pass: find date sub-range where this exact plan (by ID) appeared in [start, end].
+	// Second pass: find date sub-range where this plan (matched by identity: company,
+	// product, term, and rates) appeared in [start, end]. We match by plan identity
+	// rather than ElectricityRateID because each daily fetch creates new row IDs for
+	// the same underlying plan, so ID-matching would always return a single date.
 	var dateStart, dateEnd time.Time
 	for dateStr, candidates := range pc.allPlans {
 		fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
@@ -168,7 +171,11 @@ func (pc *projectionContext) bestPlanInRange(
 			continue
 		}
 		for _, r := range candidates {
-			if r.ElectricityRateID == best.ElectricityRateID {
+			if r.RepCompany == best.RepCompany &&
+				r.Product == best.Product &&
+				r.TermValue == best.TermValue &&
+				r.PerKwhRate == best.PerKwhRate &&
+				r.BaseFee == best.BaseFee {
 				if dateStart.IsZero() || fetchDate.Before(dateStart) {
 					dateStart = fetchDate
 				}
