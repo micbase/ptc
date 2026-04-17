@@ -158,7 +158,7 @@ const sweepChartData = computed<ChartData<'line'>>(() => {
   const labels = offsetLabels.value
   const datasets = sweeps.value.map((sweep) => {
     const color = SWEEP_COLORS[sweep.strategy_id] ?? '#888'
-    const data = sweep.entries.map((e) => e.total_cost)
+    const data = sweep.entries.map((e) => totalCostMode.value ? e.total_cost : e.post_switch_cost)
     const bestIdx = effectiveBestIndex(sweep)
     const pointRadius = sweep.entries.map((_, i) => i === bestIdx ? 8 : 3)
     const pointStyle = sweep.entries.map((_, i) =>
@@ -190,7 +190,7 @@ const sweepChartOptions = computed<ChartOptions<'line'>>(() => ({
       title: { display: true, text: 'Switch entry (months from today)' },
       ticks: { maxRotation: 0 },
     },
-    y: { title: { display: true, text: 'Total cost ($)' } },
+    y: { title: { display: true, text: totalCostMode.value ? 'Total cost ($)' : 'Post-switch cost ($)' } },
   },
   plugins: {
     legend: { position: 'top' },
@@ -208,10 +208,13 @@ const sweepChartOptions = computed<ChartOptions<'line'>>(() => ({
           const entry = sweep.entries[ctx.dataIndex]
           if (!entry) return `${sweep.strategy_name}: $${(ctx.raw as number).toFixed(2)}`
           const isBest = ctx.dataIndex === effectiveBestIndex(sweep)
-          const parts = [`${sweep.strategy_name}: $${entry.total_cost.toFixed(2)}${isBest ? ' ★ best' : ''}`]
-          if (entry.pre_switch_cost > 0) parts.push(`  pre-switch: $${entry.pre_switch_cost.toFixed(2)}`)
-          if (entry.etf_applied > 0) parts.push(`  ETF: $${entry.etf_applied.toFixed(2)}`)
-          parts.push(`  post-switch: $${entry.post_switch_cost.toFixed(2)}`)
+          const displayCost = totalCostMode.value ? entry.total_cost : entry.post_switch_cost
+          const parts = [`${sweep.strategy_name}: $${displayCost.toFixed(2)}${isBest ? ' ★ best' : ''}`]
+          if (totalCostMode.value) {
+            if (entry.pre_switch_cost > 0) parts.push(`  pre-switch: $${entry.pre_switch_cost.toFixed(2)}`)
+            if (entry.etf_applied > 0) parts.push(`  ETF: $${entry.etf_applied.toFixed(2)}`)
+            parts.push(`  post-switch: $${entry.post_switch_cost.toFixed(2)}`)
+          }
           if (entry.savings_vs_baseline > 0) parts.push(`  saves: $${entry.savings_vs_baseline.toFixed(2)}`)
           return parts
         },
@@ -537,21 +540,35 @@ function openEnrollModal(plan: Plan, periodStart: string) {
 
       <!-- Sweep chart -->
       <div class="bg-white rounded-lg shadow overflow-hidden mb-6">
-        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-          <h2 class="text-base font-semibold text-gray-700">Total Cost by Switch Entry Date</h2>
+        <div class="px-4 py-3 border-b border-gray-100 flex items-center gap-3 flex-wrap">
+          <h2 class="text-base font-semibold text-gray-700">{{ totalCostMode ? 'Total Cost' : 'Post-Switch Cost' }} by Switch Entry Date</h2>
           <span class="text-xs text-gray-400">Click a point to inspect that entry · ◆ = best entry per strategy</span>
-          <button
-            v-if="selectedStrategyId"
-            @click="selectedStrategyId = null; selectedOffset = null"
-            class="ml-auto text-xs text-blue-600 underline"
-          >Reset selection</button>
+          <div class="ml-auto flex items-center gap-3">
+            <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
+              <button
+                @click="totalCostMode = false"
+                :class="['px-3 py-1.5 transition-colors', !totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
+              >Post-switch only</button>
+              <button
+                @click="totalCostMode = true"
+                :class="['px-3 py-1.5 transition-colors border-l border-gray-300', totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
+              >Total cost considered</button>
+            </div>
+            <button
+              v-if="selectedStrategyId"
+              @click="selectedStrategyId = null; selectedOffset = null"
+              class="text-xs text-blue-600 underline"
+            >Reset selection</button>
+          </div>
         </div>
         <div class="p-4">
           <div style="height: 380px">
             <Line :data="sweepChartData" :options="sweepChartOptions" style="height: 380px" />
           </div>
           <p class="mt-2 text-xs text-gray-400">
-            Y-axis = pre-switch cost + ETF + 12-month post-switch cost. ◆ = cheapest entry date for each strategy. Click to inspect.
+            <template v-if="totalCostMode">Y-axis = pre-switch cost + ETF + 12-month post-switch cost.</template>
+            <template v-else>Y-axis = 12-month post-switch cost only (apples-to-apples comparison).</template>
+            ◆ = cheapest entry date for each strategy. Click to inspect.
           </p>
         </div>
       </div>
@@ -640,20 +657,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                 <!-- Inline breakdown for selected strategy -->
                 <tr v-if="sweep.strategy_id === selectedStrategyId" :key="sweep.strategy_id + '-breakdown'">
                   <td colspan="7" class="p-0 bg-blue-50 border-t border-blue-200">
-
-                    <!-- Cost mode toggle -->
-                    <div class="px-4 pt-3 pb-2 flex items-center gap-3 flex-wrap">
-                      <div class="inline-flex rounded border border-gray-300 overflow-hidden text-xs">
-                        <button
-                          @click.stop="totalCostMode = false"
-                          :class="['px-3 py-1.5 transition-colors', !totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
-                        >Post-switch only</button>
-                        <button
-                          @click.stop="totalCostMode = true"
-                          :class="['px-3 py-1.5 transition-colors border-l border-gray-300', totalCostMode ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50']"
-                        >Total cost considered</button>
-                      </div>
-                    </div>
 
                     <!-- Offset selector tabs -->
                     <div class="px-4 pb-1 flex items-center gap-1 flex-wrap">
