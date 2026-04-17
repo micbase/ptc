@@ -42,7 +42,12 @@ onMounted(() => {
   .finally(() => { chartLoading.value = false })
 
   fetchLatestDate().then(d => {
-    date.value = d
+    if (d === date.value) {
+      // Date unchanged — watcher won't fire, so load manually
+      loadPlans()
+    } else {
+      date.value = d // watcher fires and calls loadPlans
+    }
   }).catch(() => {
     loadPlans()
   })
