@@ -67,6 +67,12 @@ type AddSwitchEventRequest struct {
 	Notes                  string `json:"notes"`
 }
 
+type UpdateSwitchEventRequest struct {
+	SwitchDate             string `json:"switch_date"`
+	ContractExpirationDate string `json:"contract_expiration_date"`
+	Notes                  string `json:"notes"`
+}
+
 // ProjectionRequest specifies ETF terms, contract expiration, and current plan rates.
 // CurrentPlanCents and CurrentPlanBaseFee are the decomposed marginal rate (¢/kWh)
 // and base fee ($/month) of the user's current plan, used to price the pre-switch period.

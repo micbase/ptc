@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { fetchSwitchEvents, addSwitchEvent, fetchPlans, fetchLatestDate } from '../api'
+import { fetchSwitchEvents, addSwitchEvent, updateSwitchEvent, fetchPlans, fetchLatestDate } from '../api'
 import type { SwitchRecord, ElectricityRate, AddSwitchEventRequest } from '../types'
 
 const records = ref<SwitchRecord[]>([])
@@ -123,6 +123,43 @@ async function onSubmitAdd() {
 function formatDate(s: string) {
   return s ? s.slice(0, 10) : '—'
 }
+
+// ── Edit modal state ──────────────────────────────────────────────────────────
+const showEditModal = ref(false)
+const editRecord = ref<SwitchRecord | null>(null)
+const editSwitchDate = ref('')
+const editExpirationDate = ref('')
+const editNotes = ref('')
+const editError = ref('')
+const editSaving = ref(false)
+
+function openEditModal(r: SwitchRecord) {
+  editRecord.value = r
+  editSwitchDate.value = r.switch_date.slice(0, 10)
+  editExpirationDate.value = r.contract_expiration_date.slice(0, 10)
+  editNotes.value = r.notes
+  editError.value = ''
+  showEditModal.value = true
+}
+
+async function onSubmitEdit() {
+  if (!editRecord.value) return
+  editError.value = ''
+  editSaving.value = true
+  try {
+    await updateSwitchEvent(editRecord.value.id, {
+      switch_date: editSwitchDate.value,
+      contract_expiration_date: editExpirationDate.value,
+      notes: editNotes.value,
+    })
+    showEditModal.value = false
+    await load()
+  } catch (e: any) {
+    editError.value = e.message ?? 'Failed to update switch event'
+  } finally {
+    editSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -160,6 +197,7 @@ function formatDate(s: string) {
               <th class="text-right px-4 py-3 font-medium">¢/kWh@1000</th>
               <th class="text-left px-4 py-3 font-medium">ETF</th>
               <th class="text-left px-4 py-3 font-medium">Notes</th>
+              <th class="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
@@ -178,11 +216,88 @@ function formatDate(s: string) {
               <td class="px-4 py-3 text-right tabular-nums text-gray-700">{{ (r.kwh1000 * 100).toFixed(2) }}</td>
               <td class="px-4 py-3 text-gray-600 text-xs whitespace-nowrap">{{ r.cancel_fee || '—' }}</td>
               <td class="px-4 py-3 text-gray-500 text-xs max-w-xs truncate">{{ r.notes || '—' }}</td>
+              <td class="px-4 py-3 whitespace-nowrap">
+                <button
+                  @click="openEditModal(r)"
+                  class="px-2 py-1 text-xs text-gray-500 hover:text-blue-600 border border-gray-200 rounded hover:border-blue-400 hover:bg-blue-50"
+                >
+                  Edit
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
+
+    <!-- Edit Switch Modal -->
+    <Teleport to="body">
+      <div
+        v-if="showEditModal"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+        @click.self="showEditModal = false"
+      >
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 p-6">
+          <h2 class="text-lg font-semibold text-gray-900 mb-1">Edit Switch Event</h2>
+          <p v-if="editRecord" class="text-xs text-gray-500 mb-4">
+            {{ editRecord.rep_company }} — {{ editRecord.product }}
+          </p>
+
+          <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Switch Date</label>
+                <input
+                  v-model="editSwitchDate"
+                  type="date"
+                  required
+                  class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1">Contract Expiration</label>
+                <input
+                  v-model="editExpirationDate"
+                  type="date"
+                  required
+                  class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label class="block text-xs font-medium text-gray-600 mb-1">Notes (optional)</label>
+              <input
+                v-model="editNotes"
+                type="text"
+                placeholder="e.g. Switched from TXU"
+                class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+
+            <div v-if="editError" class="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+              {{ editError }}
+            </div>
+          </div>
+
+          <div class="flex gap-2 justify-end pt-4 border-t border-gray-100 mt-4">
+            <button
+              @click="showEditModal = false"
+              class="px-4 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              @click="onSubmitEdit"
+              :disabled="editSaving || !editSwitchDate || !editExpirationDate"
+              class="px-4 py-1.5 text-sm font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {{ editSaving ? 'Saving…' : 'Save Changes' }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Add Switch Modal -->
     <Teleport to="body">

@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -188,6 +190,38 @@ func handleAddSwitchEvent(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(record)
+	}
+}
+
+func handleUpdateSwitchEvent(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		idStr := chi.URLParam(r, "id")
+		id, err := strconv.Atoi(idStr)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid id", http.StatusBadRequest)
+			return
+		}
+		var req UpdateSwitchEventRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.SwitchDate == "" {
+			http.Error(w, "switch_date is required", http.StatusBadRequest)
+			return
+		}
+		if req.ContractExpirationDate == "" {
+			http.Error(w, "contract_expiration_date is required", http.StatusBadRequest)
+			return
+		}
+		record, err := updateSwitchEvent(r.Context(), pool, id, req)
+		if err != nil {
+			log.Printf("update switch event error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(record)
 	}
 }

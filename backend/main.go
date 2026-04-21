@@ -61,6 +61,7 @@ func main() {
 	r.Get("/api/switch-events/latest", handleLatestSwitchEvent(pool))
 	r.Get("/api/switch-events", handleSwitchEvents(pool))
 	r.Post("/api/switch-events", handleAddSwitchEvent(pool))
+	r.Put("/api/switch-events/{id}", handleUpdateSwitchEvent(pool))
 
 	distFS, err := fs.Sub(frontendFS, "dist")
 	if err != nil {

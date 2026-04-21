@@ -58,3 +58,16 @@ export async function addSwitchEvent(req: AddSwitchEventRequest): Promise<Switch
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
+
+export async function updateSwitchEvent(
+  id: number,
+  req: { switch_date: string; contract_expiration_date: string; notes: string },
+): Promise<SwitchRecord> {
+  const res = await fetch(`${BASE}/switch-events/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
