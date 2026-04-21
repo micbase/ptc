@@ -274,6 +274,24 @@ func insertSwitchEvent(ctx context.Context, pool *pgxpool.Pool, req AddSwitchEve
 }
 
 
+func updateSwitchEvent(ctx context.Context, pool *pgxpool.Pool, id int, req UpdateSwitchEventRequest) (SwitchRecord, error) {
+	_, err := pool.Exec(ctx, `
+		UPDATE switch_events
+		SET switch_date = $1, contract_expiration_date = $2, notes = $3
+		WHERE id = $4`,
+		req.SwitchDate, req.ContractExpirationDate, req.Notes, id,
+	)
+	if err != nil {
+		return SwitchRecord{}, err
+	}
+	row := pool.QueryRow(ctx, `
+		SELECT `+switchEventSelectCols+`
+		FROM switch_events se
+		JOIN electricity_rates er ON er.id = se.electricity_rate_id
+		WHERE se.id = $1`, id)
+	return scanSwitchRecord(row)
+}
+
 func absf(x float64) float64 {
 	if x < 0 {
 		return -x
