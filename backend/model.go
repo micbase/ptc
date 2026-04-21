@@ -58,6 +58,10 @@ type SwitchRecord struct {
 	// Decomposed rates (computed from kwh500/1000/2000)
 	BaseFee    float64 `json:"base_fee"`     // $ per month
 	PerKwhRate float64 `json:"per_kwh_rate"` // ¢/kWh (marginal)
+	// Computed from usage_intervals for the period this plan was active
+	TotalUsageKwh float64 `json:"total_usage_kwh"` // kWh consumed during active period
+	TotalCost     float64 `json:"total_cost"`      // $ total cost (base fees + usage)
+	PeriodDays    int     `json:"period_days"`     // number of days the plan was active
 }
 
 type AddSwitchEventRequest struct {

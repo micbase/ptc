@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -216,7 +217,13 @@ func querySwitchEvents(ctx context.Context, pool *pgxpool.Pool, limit int) ([]Sw
 		}
 		records = append(records, r)
 	}
-	return records, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := enrichSwitchRecordCosts(ctx, pool, records); err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 const switchEventSelectCols = `
@@ -290,6 +297,60 @@ func updateSwitchEvent(ctx context.Context, pool *pgxpool.Pool, id int, req Upda
 		JOIN electricity_rates er ON er.id = se.electricity_rate_id
 		WHERE se.id = $1`, id)
 	return scanSwitchRecord(row)
+}
+
+// enrichSwitchRecordCosts computes TotalUsageKwh, TotalCost, and PeriodDays for each
+// record by querying usage_intervals over each plan's active window.
+// Records must be ordered by switch_date DESC (most-recent first), matching querySwitchEvents output.
+// The active window for record i is [records[i].SwitchDate, records[i-1].SwitchDate).
+// For the most-recent record (i==0) the window ends at today.
+func enrichSwitchRecordCosts(ctx context.Context, pool *pgxpool.Pool, records []SwitchRecord) error {
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+
+	for i := range records {
+		periodStart, err := time.Parse("2006-01-02", records[i].SwitchDate)
+		if err != nil {
+			continue
+		}
+
+		var periodEnd time.Time
+		if i == 0 {
+			// Most recent record: plan is (or was) active up to today.
+			periodEnd = today
+		} else {
+			// Older record: ended when the next (more recent) switch happened.
+			t, err := time.Parse("2006-01-02", records[i-1].SwitchDate)
+			if err != nil {
+				continue
+			}
+			periodEnd = t
+		}
+
+		days := int(periodEnd.Sub(periodStart).Hours() / 24)
+		if days <= 0 {
+			continue
+		}
+		records[i].PeriodDays = days
+
+		var totalKwh float64
+		err = pool.QueryRow(ctx, `
+			SELECT COALESCE(SUM(consumption_kwh), 0)::float8
+			FROM usage_intervals
+			WHERE interval_start >= $1 AND interval_start < $2`,
+			periodStart, periodEnd,
+		).Scan(&totalKwh)
+		if err != nil {
+			return err
+		}
+		records[i].TotalUsageKwh = totalKwh
+
+		// base_fee is charged each billing month; approximate as days/30 months.
+		months := float64(days) / 30.0
+		baseFeeTotal := records[i].BaseFee * months
+		usageCost := totalKwh * records[i].PerKwhRate / 100.0
+		records[i].TotalCost = math.Round((baseFeeTotal+usageCost)*100) / 100
+	}
+	return nil
 }
 
 func absf(x float64) float64 {
