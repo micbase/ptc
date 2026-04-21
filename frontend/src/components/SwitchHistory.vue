@@ -160,6 +160,27 @@ async function onSubmitEdit() {
     editSaving.value = false
   }
 }
+
+function formatCost(v: number): string {
+  if (!v) return '—'
+  return '$' + v.toFixed(2)
+}
+
+function formatUsage(v: number): string {
+  if (!v) return '—'
+  return v.toFixed(0) + ' kWh'
+}
+
+// The active period label: "N days" or "N mo" depending on length.
+function formatPeriod(r: SwitchRecord, i: number, all: SwitchRecord[]): string {
+  const days = r.period_days
+  if (!days) return '—'
+  if (i === 0) {
+    // Most recent record: still active
+    return days >= 30 ? `${Math.round(days / 30)} mo (active)` : `${days}d (active)`
+  }
+  return days >= 30 ? `~${Math.round(days / 30)} mo` : `${days}d`
+}
 </script>
 
 <template>
@@ -196,13 +217,16 @@ async function onSubmitEdit() {
               <th class="text-center px-4 py-3 font-medium">Term</th>
               <th class="text-right px-4 py-3 font-medium">¢/kWh@1000</th>
               <th class="text-left px-4 py-3 font-medium">ETF</th>
+              <th class="text-right px-4 py-3 font-medium">Active Period</th>
+              <th class="text-right px-4 py-3 font-medium">Usage</th>
+              <th class="text-right px-4 py-3 font-medium">Total Cost</th>
               <th class="text-left px-4 py-3 font-medium">Notes</th>
               <th class="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="r in records"
+              v-for="(r, i) in records"
               :key="r.id"
               class="border-t border-gray-100 hover:bg-gray-50"
             >
@@ -215,6 +239,9 @@ async function onSubmitEdit() {
               </td>
               <td class="px-4 py-3 text-right tabular-nums text-gray-700">{{ (r.kwh1000 * 100).toFixed(2) }}</td>
               <td class="px-4 py-3 text-gray-600 text-xs whitespace-nowrap">{{ r.cancel_fee || '—' }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-gray-500 text-xs whitespace-nowrap">{{ formatPeriod(r, i, records) }}</td>
+              <td class="px-4 py-3 text-right tabular-nums text-gray-700 whitespace-nowrap">{{ formatUsage(r.total_usage_kwh) }}</td>
+              <td class="px-4 py-3 text-right tabular-nums font-medium whitespace-nowrap" :class="r.total_cost ? 'text-gray-900' : 'text-gray-400'">{{ formatCost(r.total_cost) }}</td>
               <td class="px-4 py-3 text-gray-500 text-xs max-w-xs truncate">{{ r.notes || '—' }}</td>
               <td class="px-4 py-3 whitespace-nowrap">
                 <button

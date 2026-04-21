@@ -83,6 +83,10 @@ export interface SwitchRecord {
   // Decomposed rates
   base_fee: number     // $ per month
   per_kwh_rate: number // ¢/kWh (marginal)
+  // Computed from usage_intervals for the period this plan was active
+  total_usage_kwh: number // kWh consumed during active period
+  total_cost: number      // $ total cost (base fees + usage)
+  period_days: number     // number of days the plan was active
 }
 
 export interface AddSwitchEventRequest {
