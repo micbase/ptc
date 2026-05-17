@@ -58,7 +58,7 @@ const data = computed(() => ({
 }))
 
 const options = computed(() => ({
-  animation: false,
+  animation: false as const,
   responsive: true,
   maintainAspectRatio: false,
   interaction: {
