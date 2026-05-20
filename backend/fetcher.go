@@ -73,7 +73,12 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool) (*FetchResult, erro
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	return parseAndInsert(ctx, pool, resp.Body, today)
+}
+
+// parseAndInsert reads a PTC CSV from r and upserts all rows with the given date.
+func parseAndInsert(ctx context.Context, pool *pgxpool.Pool, r io.Reader, date string) (*FetchResult, error) {
+	body, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("reading CSV body: %w", err)
 	}
@@ -99,8 +104,8 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool) (*FetchResult, erro
 		return nil, fmt.Errorf("no valid CSV data found in response")
 	}
 
-	r := csv.NewReader(strings.NewReader(strings.Join(csvLines, "\n")))
-	records, err := r.ReadAll()
+	csvReader := csv.NewReader(strings.NewReader(strings.Join(csvLines, "\n")))
+	records, err := csvReader.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("parsing CSV: %w", err)
 	}
@@ -175,7 +180,7 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool) (*FetchResult, erro
 				args[j] = val
 			}
 		}
-		args[len(validIdxs)] = today
+		args[len(validIdxs)] = date
 		args[len(validIdxs)+1] = processedAt
 
 		if _, err := tx.Exec(ctx, query, args...); err != nil {
@@ -188,9 +193,9 @@ func fetchAndInsert(ctx context.Context, pool *pgxpool.Pool) (*FetchResult, erro
 		return nil, fmt.Errorf("committing transaction: %w", err)
 	}
 
-	log.Printf("Upserted %d rows for %s", upserted, today)
+	log.Printf("Upserted %d rows for %s", upserted, date)
 	return &FetchResult{
 		Upserted: upserted,
-		Message:  fmt.Sprintf("upserted %d rows for %s", upserted, today),
+		Message:  fmt.Sprintf("upserted %d rows for %s", upserted, date),
 	}, nil
 }

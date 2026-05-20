@@ -55,6 +55,7 @@ func main() {
 	r.Get("/api/charts", handleCharts(pool))
 	r.Get("/api/latest-date", handleLatestDate(pool))
 	r.Post("/api/fetch", handleFetch(pool))
+	r.Post("/api/import", handleImport(pool))
 	r.Get("/api/usage/status", handleUsageStatus(pool, smtClient))
 	r.Post("/api/usage/backfill", handleUsageBackfill(pool, smtClient))
 	r.Post("/api/projection", handleProjection(pool))
