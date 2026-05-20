@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -49,6 +50,41 @@ func handleFetch(pool *pgxpool.Pool) http.HandlerFunc {
 		result, err := fetchAndInsert(r.Context(), pool)
 		if err != nil {
 			log.Printf("fetch error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(result)
+	}
+}
+
+// handleImport accepts a multipart form upload with fields "file" (CSV) and "date" (YYYY-MM-DD),
+// then upserts all rows using the provided date instead of today.
+func handleImport(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			http.Error(w, "parsing form: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		date := strings.TrimSpace(r.FormValue("date"))
+		if date == "" {
+			http.Error(w, "date field is required (YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			http.Error(w, "date must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, "file field is required", http.StatusBadRequest)
+			return
+		}
+		defer file.Close()
+
+		result, err := parseAndInsert(r.Context(), pool, file, date)
+		if err != nil {
+			log.Printf("import error: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
