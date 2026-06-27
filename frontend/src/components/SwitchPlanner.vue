@@ -749,11 +749,6 @@ function openEnrollModal(plan: Plan, periodStart: string) {
                                 class="ml-1 inline-block text-xs bg-blue-100 text-blue-600 px-1 rounded"
                                 title="Projected from historical rates (~1 year ago)"
                               >est</span>
-                              <span
-                                v-else-if="pb.plan_kind === 'fallback'"
-                                class="ml-1 inline-block text-xs bg-amber-100 text-amber-700 px-1 rounded"
-                                title="Fallback: most-recent historical rate used (no data in ideal window)"
-                              >fallback</span>
                               <button
                                 v-if="pb.active_plan.enroll_url && pb.plan_kind === 'actual'"
                                 @click.stop="openEnrollModal(pb.active_plan, pb.period_start)"
