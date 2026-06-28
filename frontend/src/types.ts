@@ -99,8 +99,7 @@ export interface AddSwitchEventRequest {
 // PlanKind describes the source of a period's rates.
 // actual    = today's live market rates (enrollment is available).
 // projected = historical rates from ~1 year ago used as a proxy for a future period.
-// fallback  = most-recent available historical rates (ideal window had no data).
-export type PlanKind = 'actual' | 'projected' | 'fallback'
+export type PlanKind = 'actual' | 'projected'
 
 export interface PeriodBreakdown {
   period: string        // "T+N" period label

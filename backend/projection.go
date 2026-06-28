@@ -12,13 +12,11 @@ import (
 // PlanKind describes the source of a plan's rates.
 // actual    = today's live market rates (enrollment is available now).
 // projected = historical rates from ~1 year ago used as a proxy for a future period.
-// fallback  = most-recent available historical rates, used when the ideal window has no data.
 type PlanKind string
 
 const (
 	PlanKindActual    PlanKind = "actual"
 	PlanKindProjected PlanKind = "projected"
-	PlanKindFallback  PlanKind = "fallback"
 )
 
 // Plan is a candidate plan from the database, enriched with decomposed rates.
@@ -267,52 +265,13 @@ func (pc *projectionContext) selectBestPlan(termMonths int, decisionDate time.Ti
 		histEnd = decisionDate.AddDate(-yearsBack, 0, 0)
 	}
 	if histStart.Before(histEnd) {
-		isFallback := false
 		histRes := pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, histStart, histEnd)
-		if histRes == nil {
-			// Fallback: no data in ideal window.
-			isFallback = true
-
-			// Special case: if histEnd falls in the May 1 – June 11 gap, use the
-			// best plan from June of that same year as the fallback source.
-			histEndMD := int(histEnd.Month())*100 + histEnd.Day()
-			if histEndMD >= 501 && histEndMD <= 611 {
-				juneStart := time.Date(histEnd.Year(), time.June, 1, 0, 0, 0, 0, time.UTC)
-				juneEnd := time.Date(histEnd.Year(), time.June, 30, 0, 0, 0, 0, time.UTC)
-				histRes = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, juneStart, juneEnd)
-			}
-
-			if histRes == nil {
-				// General fallback: use the most recent date that has at least one
-				// plan with a matching term.
-				var latestDate time.Time
-				for dateStr, candidates := range pc.allPlans {
-					fetchDate, parseErr := time.Parse("2006-01-02", dateStr)
-					if parseErr != nil {
-						continue
-					}
-					for _, r := range candidates {
-						if r.TermValue == termMonths && fetchDate.After(latestDate) {
-							latestDate = fetchDate
-							break
-						}
-					}
-				}
-				if !latestDate.IsZero() {
-					histRes = pc.bestPlanInRange(termMonths, numTermPeriods, termUsage, latestDate, latestDate)
-				}
-			}
-		}
 		if histRes != nil {
 			histCost := float64(numTermPeriods)*histRes.plan.BaseFee + termUsage*histRes.plan.PerKwhRate/100.0
 			if histCost < bestCost {
 				bestCost = histCost
 				bestPlan = histRes.plan
-				if isFallback {
-					bestKind = PlanKindFallback
-				} else {
-					bestKind = PlanKindProjected
-				}
+				bestKind = PlanKindProjected
 				// Shift the historical date sub-range forward by yearsBack years to
 				// produce the action window; clamp to [today, decisionDate].
 				aStart := histRes.dateStart.AddDate(yearsBack, 0, 0)
