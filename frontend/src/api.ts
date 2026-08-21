@@ -59,12 +59,6 @@ export async function addSwitchEvent(req: AddSwitchEventRequest): Promise<Switch
   return res.json()
 }
 
-export async function triggerRefreshEstimated(): Promise<{ result: { message: string }; coverage: object }> {
-  const res = await fetch(`${BASE}/usage/refresh-estimated`, { method: 'POST' })
-  if (!res.ok) throw new Error(await res.text())
-  return res.json()
-}
-
 export async function fetchUsageHistory(start: string, end: string): Promise<UsageDayPoint[]> {
   const res = await fetch(`${BASE}/usage/history?start=${start}&end=${end}`)
   if (!res.ok) throw new Error(await res.text())

@@ -115,29 +115,6 @@ func handleUsageBackfill(pool *pgxpool.Pool, client *SMTClient) http.HandlerFunc
 	}
 }
 
-// handleRefreshEstimated re-fetches the oldest window of estimated days so that
-// intervals the utility has since finalized get updated to is_actual=true.
-func handleRefreshEstimated(pool *pgxpool.Pool, client *SMTClient) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if client == nil {
-			http.Error(w, "SMT credentials not configured", http.StatusServiceUnavailable)
-			return
-		}
-		result := doRefreshEstimatedStep(r.Context(), client, pool)
-		cov, err := queryUsageCoverage(r.Context(), pool)
-		if err != nil {
-			log.Printf("refresh estimated coverage query error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"result":   result,
-			"coverage": cov,
-		})
-	}
-}
-
 // handleUsageStatus returns the current SMT data coverage for the configured ESIID.
 func handleUsageStatus(pool *pgxpool.Pool, client *SMTClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

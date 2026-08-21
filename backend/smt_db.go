@@ -123,27 +123,27 @@ func truncDay(t time.Time) time.Time {
 }
 
 // findEstimatedRefreshWindow returns the next 7-day window to re-fetch for days
-// that still have estimated intervals. Only considers days older than 2 days (the
-// utility typically finalizes readings within 24-48 hours).
+// that still have estimated intervals, within the 2-year API window.
 // Returns ok=false when no estimated days need refreshing.
 func findEstimatedRefreshWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
-	threshold := truncDay(time.Now().AddDate(0, 0, -2))
+	oldest    := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
+	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
 
-	var oldest *time.Time
+	var oldest_estimated *time.Time
 	pool.QueryRow(ctx, `
 		SELECT MIN(DATE(interval_start))
 		FROM usage_intervals
 		WHERE is_actual = false
-		  AND DATE(interval_start) < $1`, threshold).Scan(&oldest)
+		  AND DATE(interval_start) >= $1`, oldest).Scan(&oldest_estimated)
 
-	if oldest == nil {
+	if oldest_estimated == nil {
 		return time.Time{}, time.Time{}, false
 	}
 
-	start = truncDay(*oldest)
+	start = truncDay(*oldest_estimated)
 	end = start.AddDate(0, 0, 6)
-	if end.After(threshold) {
-		end = threshold
+	if end.After(yesterday) {
+		end = yesterday
 	}
 	return start, end, true
 }
