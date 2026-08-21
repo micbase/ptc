@@ -353,6 +353,35 @@ func enrichSwitchRecordCosts(ctx context.Context, pool *pgxpool.Pool, records []
 	return nil
 }
 
+// queryUsageHistory returns daily aggregated usage from usage_intervals for [start, end] inclusive.
+func queryUsageHistory(ctx context.Context, pool *pgxpool.Pool, start, end string) ([]UsageDayPoint, error) {
+	rows, err := pool.Query(ctx, `
+		SELECT
+			DATE(interval_start)::text AS day,
+			SUM(consumption_kwh)::float8 AS kwh,
+			BOOL_AND(is_actual) AS is_actual
+		FROM usage_intervals
+		WHERE interval_start >= $1::date AND interval_start < ($2::date + INTERVAL '1 day')
+		GROUP BY DATE(interval_start)
+		ORDER BY day`,
+		start, end,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	points := make([]UsageDayPoint, 0)
+	for rows.Next() {
+		var p UsageDayPoint
+		if err := rows.Scan(&p.Date, &p.Kwh, &p.IsActual); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	return points, rows.Err()
+}
+
 func absf(x float64) float64 {
 	if x < 0 {
 		return -x

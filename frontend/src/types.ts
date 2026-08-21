@@ -38,6 +38,12 @@ export interface ChartPoint {
   kwh1000: number
 }
 
+export interface UsageDayPoint {
+  date: string
+  kwh: number
+  is_actual: boolean
+}
+
 export interface ProjectionRequest {
   etf_amount: number
   etf_per_month_amount: number

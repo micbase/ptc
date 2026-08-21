@@ -262,6 +262,34 @@ func handleUpdateSwitchEvent(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+func handleUsageHistory(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := r.URL.Query().Get("start")
+		end := r.URL.Query().Get("end")
+		if start == "" || end == "" {
+			http.Error(w, "start and end query parameters are required (YYYY-MM-DD)", http.StatusBadRequest)
+			return
+		}
+		if _, err := time.Parse("2006-01-02", start); err != nil {
+			http.Error(w, "start must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		if _, err := time.Parse("2006-01-02", end); err != nil {
+			http.Error(w, "end must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+
+		points, err := queryUsageHistory(r.Context(), pool, start, end)
+		if err != nil {
+			log.Printf("usage history error: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(points)
+	}
+}
+
 func handleCharts(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		chartType := r.URL.Query().Get("type")

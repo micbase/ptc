@@ -1,4 +1,4 @@
-import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategySweep, SwitchRecord, AddSwitchEventRequest } from './types'
+import type { ElectricityRate, ChartPoint, ProjectionRequest, StrategySweep, SwitchRecord, AddSwitchEventRequest, UsageDayPoint } from './types'
 
 export async function fetchLatestSwitchEvent(): Promise<SwitchRecord | null> {
   const res = await fetch(`${BASE}/switch-events/latest`)
@@ -57,6 +57,12 @@ export async function addSwitchEvent(req: AddSwitchEventRequest): Promise<Switch
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json()
+}
+
+export async function fetchUsageHistory(start: string, end: string): Promise<UsageDayPoint[]> {
+  const res = await fetch(`${BASE}/usage/history?start=${start}&end=${end}`)
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) ?? []
 }
 
 export async function updateSwitchEvent(

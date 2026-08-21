@@ -88,6 +88,12 @@ type ProjectionRequest struct {
 	CurrentPlanBaseFee float64 `json:"current_plan_base_fee"` // $ per month
 }
 
+type UsageDayPoint struct {
+	Date     string  `json:"date"`
+	Kwh      float64 `json:"kwh"`
+	IsActual bool    `json:"is_actual"`
+}
+
 // SweepEntry represents one candidate entry date within a strategy sweep.
 type SweepEntry struct {
 	WindowStart       string            `json:"window_start"`        // "YYYY-MM-DD"
