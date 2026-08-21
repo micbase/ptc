@@ -10,7 +10,7 @@ import {
   Tooltip,
   Legend,
 } from 'chart.js'
-import { fetchUsageHistory } from '../api'
+import { fetchUsageHistory, triggerRefreshEstimated } from '../api'
 import type { UsageDayPoint } from '../types'
 
 ChartJS.register(BarElement, BarController, CategoryScale, LinearScale, Tooltip, Legend)
@@ -30,6 +30,8 @@ const endDate = ref(today())
 const points = ref<UsageDayPoint[]>([])
 const loading = ref(false)
 const error = ref('')
+const refreshing = ref(false)
+const refreshMessage = ref('')
 
 async function load() {
   loading.value = true
@@ -40,6 +42,21 @@ async function load() {
     error.value = e.message ?? 'Failed to load usage data'
   } finally {
     loading.value = false
+  }
+}
+
+async function refreshEstimated() {
+  refreshing.value = true
+  refreshMessage.value = ''
+  error.value = ''
+  try {
+    const res = await triggerRefreshEstimated()
+    refreshMessage.value = res.result.message
+    await load()
+  } catch (e: any) {
+    error.value = e.message ?? 'Failed to refresh estimated data'
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -137,6 +154,20 @@ const chartOptions = computed(() => ({
       >
         {{ loading ? 'Loading…' : 'Apply' }}
       </button>
+      <button
+        v-if="estimatedDays > 0"
+        class="px-4 py-1.5 bg-amber-500 text-white text-sm font-medium rounded hover:bg-amber-600 disabled:opacity-50"
+        :disabled="refreshing || loading"
+        :title="'Re-fetch estimated days from SmartMeterTexas to pick up finalized readings'"
+        @click="refreshEstimated"
+      >
+        {{ refreshing ? 'Refreshing…' : 'Refresh Estimated' }}
+      </button>
+    </div>
+
+    <!-- Refresh result -->
+    <div v-if="refreshMessage" class="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-4 py-2">
+      {{ refreshMessage }}
     </div>
 
     <!-- Error -->

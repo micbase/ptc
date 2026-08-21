@@ -121,3 +121,29 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 func truncDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
+
+// findEstimatedRefreshWindow returns the next 7-day window to re-fetch for days
+// that still have estimated intervals. Only considers days older than 2 days (the
+// utility typically finalizes readings within 24-48 hours).
+// Returns ok=false when no estimated days need refreshing.
+func findEstimatedRefreshWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
+	threshold := truncDay(time.Now().AddDate(0, 0, -2))
+
+	var oldest *time.Time
+	pool.QueryRow(ctx, `
+		SELECT MIN(DATE(interval_start))
+		FROM usage_intervals
+		WHERE is_actual = false
+		  AND DATE(interval_start) < $1`, threshold).Scan(&oldest)
+
+	if oldest == nil {
+		return time.Time{}, time.Time{}, false
+	}
+
+	start = truncDay(*oldest)
+	end = start.AddDate(0, 0, 6)
+	if end.After(threshold) {
+		end = threshold
+	}
+	return start, end, true
+}
