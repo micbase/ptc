@@ -121,3 +121,29 @@ func findBackfillWindow(ctx context.Context, pool *pgxpool.Pool) (start, end tim
 func truncDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
+
+// findEstimatedRefreshWindow returns the next 7-day window to re-fetch for days
+// that still have estimated intervals, within the 2-year API window.
+// Returns ok=false when no estimated days need refreshing.
+func findEstimatedRefreshWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
+	oldest    := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
+	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
+
+	var oldest_estimated *time.Time
+	pool.QueryRow(ctx, `
+		SELECT MIN(DATE(interval_start))
+		FROM usage_intervals
+		WHERE is_actual = false
+		  AND DATE(interval_start) >= $1`, oldest).Scan(&oldest_estimated)
+
+	if oldest_estimated == nil {
+		return time.Time{}, time.Time{}, false
+	}
+
+	start = truncDay(*oldest_estimated)
+	end = start.AddDate(0, 0, 6)
+	if end.After(yesterday) {
+		end = yesterday
+	}
+	return start, end, true
+}

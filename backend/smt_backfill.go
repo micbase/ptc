@@ -23,6 +23,7 @@ import (
 func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) {
 	// Run once immediately on startup.
 	doBackfillStep(ctx, client, pool)
+	doRefreshEstimatedStep(ctx, client, pool)
 
 	scheduleHours := []int{8, 20}
 	for {
@@ -43,6 +44,7 @@ func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) 
 			return
 		case <-time.After(time.Until(next)):
 			doBackfillStep(ctx, client, pool)
+			doRefreshEstimatedStep(ctx, client, pool)
 		}
 	}
 }
@@ -54,6 +56,41 @@ type BackfillResult struct {
 	Fetched        int    `json:"fetched,omitempty"`
 	Upserted       int    `json:"upserted,omitempty"`
 	Message        string `json:"message"`
+}
+
+// doRefreshEstimatedStep re-fetches the oldest 7-day window of estimated days so
+// that intervals the utility has since finalized get updated to is_actual=true.
+func doRefreshEstimatedStep(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) *BackfillResult {
+	start, end, ok := findEstimatedRefreshWindow(ctx, pool)
+	if !ok {
+		log.Printf("SMT estimated refresh: no estimated days to refresh")
+		return &BackfillResult{AlreadyCovered: true, Message: "no estimated days to refresh"}
+	}
+
+	log.Printf("SMT estimated refresh: re-fetching %s → %s", start.Format("2006-01-02"), end.Format("2006-01-02"))
+
+	intervals, err := client.FetchIntervals(ctx, start, end)
+	if err != nil {
+		log.Printf("SMT estimated refresh: fetch error: %v", err)
+		return &BackfillResult{Message: "fetch error: " + err.Error()}
+	}
+
+	n, err := upsertIntervals(ctx, pool, intervals)
+	if err != nil {
+		log.Printf("SMT estimated refresh: db error: %v", err)
+		return &BackfillResult{Message: "db error: " + err.Error()}
+	}
+
+	msg := fmt.Sprintf("refreshed %d intervals for %s → %s",
+		n, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	log.Printf("SMT estimated refresh: %s", msg)
+	return &BackfillResult{
+		StartDate: start.Format("2006-01-02"),
+		EndDate:   end.Format("2006-01-02"),
+		Fetched:   len(intervals),
+		Upserted:  n,
+		Message:   msg,
+	}
 }
 
 func doBackfillStep(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) *BackfillResult {
