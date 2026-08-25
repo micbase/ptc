@@ -122,25 +122,41 @@ func truncDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
-// findEstimatedRefreshWindow returns the next 7-day window to re-fetch for days
-// that still have estimated intervals, within the 2-year API window.
-// Returns ok=false when no estimated days need refreshing.
-func findEstimatedRefreshWindow(ctx context.Context, pool *pgxpool.Pool) (start, end time.Time, ok bool) {
+// findEstimatedRefreshWindow returns the next 7-day window of estimated intervals
+// to re-fetch, starting after afterDate so each run advances a cursor rather than
+// always restarting at the oldest. When no estimated windows remain after
+// afterDate it wraps around to the oldest, cycling through all estimated data.
+// Returns ok=false when no estimated intervals exist at all.
+func findEstimatedRefreshWindow(ctx context.Context, pool *pgxpool.Pool, afterDate time.Time) (start, end time.Time, ok bool) {
 	oldest    := truncDay(time.Now().AddDate(-2, 0, 1)) // oldest date the API has
 	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
 
-	var oldest_estimated *time.Time
-	pool.QueryRow(ctx, `
-		SELECT MIN(DATE(interval_start))
-		FROM usage_intervals
-		WHERE is_actual = false
-		  AND DATE(interval_start) >= $1`, oldest).Scan(&oldest_estimated)
+	var candidate *time.Time
 
-	if oldest_estimated == nil {
+	// Look for the oldest estimated day strictly after the cursor.
+	if !afterDate.IsZero() {
+		pool.QueryRow(ctx, `
+			SELECT MIN(DATE(interval_start))
+			FROM usage_intervals
+			WHERE is_actual = false
+			  AND DATE(interval_start) >= $1
+			  AND DATE(interval_start) > $2`, oldest, afterDate).Scan(&candidate)
+	}
+
+	// Wrap around: find the oldest estimated day from the beginning of the window.
+	if candidate == nil {
+		pool.QueryRow(ctx, `
+			SELECT MIN(DATE(interval_start))
+			FROM usage_intervals
+			WHERE is_actual = false
+			  AND DATE(interval_start) >= $1`, oldest).Scan(&candidate)
+	}
+
+	if candidate == nil {
 		return time.Time{}, time.Time{}, false
 	}
 
-	start = truncDay(*oldest_estimated)
+	start = truncDay(*candidate)
 	end = start.AddDate(0, 0, 6)
 	if end.After(yesterday) {
 		end = yesterday
