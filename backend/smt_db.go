@@ -133,11 +133,26 @@ func findMidGapWindow(ctx context.Context, pool *pgxpool.Pool, afterDate time.Ti
 
 	var gapDay *time.Time
 
-	// Look for the first incomplete day strictly after the cursor.
-	if !afterDate.IsZero() {
-		pool.QueryRow(ctx, `
+	// expected_cnt: number of 15-min intervals a complete day should have in
+	// America/Chicago. Spring-forward days have 23 h = 92 intervals; fall-back
+	// days nominally have 25 h = 100, but deduplication collapses the repeated
+	// hour back to 96, so we cap at 96.
+	const expectedCntExpr = `
+		LEAST(
+			EXTRACT(EPOCH FROM (
+				((d + INTERVAL '1 day')::timestamp AT TIME ZONE 'America/Chicago') -
+				(d::timestamp AT TIME ZONE 'America/Chicago')
+			)) / 900,
+			96
+		)::int`
+
+	gapQuery := func(afterClause string) string {
+		return `
 			WITH expected AS (
-				SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
+				SELECT
+					d::date AS day,
+					` + expectedCntExpr + ` AS expected_cnt
+				FROM generate_series($1::date, $2::date, '1 day') AS d
 			),
 			actual AS (
 				SELECT DATE(interval_start) AS day, COUNT(*) AS cnt
@@ -149,31 +164,21 @@ func findMidGapWindow(ctx context.Context, pool *pgxpool.Pool, afterDate time.Ti
 			SELECT e.day
 			FROM expected e
 			LEFT JOIN actual a ON e.day = a.day
-			WHERE (a.cnt IS NULL OR a.cnt < 96)
-			  AND e.day > $3
+			WHERE a.cnt IS NULL OR a.cnt < e.expected_cnt` +
+			afterClause + `
 			ORDER BY e.day ASC
-			LIMIT 1`, oldest, yesterday, afterDate).Scan(&gapDay)
+			LIMIT 1`
+	}
+
+	// Look for the first incomplete day strictly after the cursor.
+	if !afterDate.IsZero() {
+		pool.QueryRow(ctx, gapQuery(`
+			  AND e.day > $3`), oldest, yesterday, afterDate).Scan(&gapDay)
 	}
 
 	// Wrap around: find the oldest incomplete day from the start of the window.
 	if gapDay == nil {
-		pool.QueryRow(ctx, `
-			WITH expected AS (
-				SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
-			),
-			actual AS (
-				SELECT DATE(interval_start) AS day, COUNT(*) AS cnt
-				FROM usage_intervals
-				WHERE DATE(interval_start) >= $1
-				  AND DATE(interval_start) <= $2
-				GROUP BY day
-			)
-			SELECT e.day
-			FROM expected e
-			LEFT JOIN actual a ON e.day = a.day
-			WHERE a.cnt IS NULL OR a.cnt < 96
-			ORDER BY e.day ASC
-			LIMIT 1`, oldest, yesterday).Scan(&gapDay)
+		pool.QueryRow(ctx, gapQuery(``), oldest, yesterday).Scan(&gapDay)
 	}
 
 	if gapDay == nil {
