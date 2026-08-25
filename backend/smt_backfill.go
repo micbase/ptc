@@ -21,9 +21,23 @@ import (
 //
 // The goroutine stops when ctx is cancelled (i.e., on server shutdown).
 func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) {
+	// cursor advances forward through estimated windows each run so that a
+	// permanently-estimated window doesn't block refresh of more recent ones.
+	var estimatedCursor time.Time
+
+	doStep := func() {
+		doBackfillStep(ctx, client, pool)
+		res := doRefreshEstimatedStep(ctx, client, pool, estimatedCursor)
+		if res != nil && res.EndDate != "" {
+			t, err := time.Parse("2006-01-02", res.EndDate)
+			if err == nil {
+				estimatedCursor = t
+			}
+		}
+	}
+
 	// Run once immediately on startup.
-	doBackfillStep(ctx, client, pool)
-	doRefreshEstimatedStep(ctx, client, pool)
+	doStep()
 
 	scheduleHours := []int{8, 20}
 	for {
@@ -43,8 +57,7 @@ func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) 
 		case <-ctx.Done():
 			return
 		case <-time.After(time.Until(next)):
-			doBackfillStep(ctx, client, pool)
-			doRefreshEstimatedStep(ctx, client, pool)
+			doStep()
 		}
 	}
 }
@@ -58,10 +71,13 @@ type BackfillResult struct {
 	Message        string `json:"message"`
 }
 
-// doRefreshEstimatedStep re-fetches the oldest 7-day window of estimated days so
-// that intervals the utility has since finalized get updated to is_actual=true.
-func doRefreshEstimatedStep(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) *BackfillResult {
-	start, end, ok := findEstimatedRefreshWindow(ctx, pool)
+// doRefreshEstimatedStep re-fetches the next 7-day window of estimated days after
+// afterDate so that intervals the utility has since finalized get updated to
+// is_actual=true. It cycles through all estimated windows rather than always
+// restarting at the oldest, preventing a permanently-estimated window from
+// blocking refresh of more recent ones.
+func doRefreshEstimatedStep(ctx context.Context, client *SMTClient, pool *pgxpool.Pool, afterDate time.Time) *BackfillResult {
+	start, end, ok := findEstimatedRefreshWindow(ctx, pool, afterDate)
 	if !ok {
 		log.Printf("SMT estimated refresh: no estimated days to refresh")
 		return &BackfillResult{AlreadyCovered: true, Message: "no estimated days to refresh"}
