@@ -122,6 +122,72 @@ func truncDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
+// findMidGapWindow scans the 2-year window for any day with fewer than 96 intervals
+// (missing or partially missing data). Uses afterDate as a cursor so each run
+// advances past the previously-visited gap rather than always restarting at the
+// oldest incomplete day. Wraps around when no incomplete days remain after the
+// cursor. Returns ok=false when no incomplete days exist at all.
+func findMidGapWindow(ctx context.Context, pool *pgxpool.Pool, afterDate time.Time) (start, end time.Time, ok bool) {
+	oldest    := truncDay(time.Now().AddDate(-2, 0, 1))
+	yesterday := truncDay(time.Now().AddDate(0, 0, -1))
+
+	var gapDay *time.Time
+
+	// Look for the first incomplete day strictly after the cursor.
+	if !afterDate.IsZero() {
+		pool.QueryRow(ctx, `
+			WITH expected AS (
+				SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
+			),
+			actual AS (
+				SELECT DATE(interval_start) AS day, COUNT(*) AS cnt
+				FROM usage_intervals
+				WHERE DATE(interval_start) >= $1
+				  AND DATE(interval_start) <= $2
+				GROUP BY day
+			)
+			SELECT e.day
+			FROM expected e
+			LEFT JOIN actual a ON e.day = a.day
+			WHERE (a.cnt IS NULL OR a.cnt < 96)
+			  AND e.day > $3
+			ORDER BY e.day ASC
+			LIMIT 1`, oldest, yesterday, afterDate).Scan(&gapDay)
+	}
+
+	// Wrap around: find the oldest incomplete day from the start of the window.
+	if gapDay == nil {
+		pool.QueryRow(ctx, `
+			WITH expected AS (
+				SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
+			),
+			actual AS (
+				SELECT DATE(interval_start) AS day, COUNT(*) AS cnt
+				FROM usage_intervals
+				WHERE DATE(interval_start) >= $1
+				  AND DATE(interval_start) <= $2
+				GROUP BY day
+			)
+			SELECT e.day
+			FROM expected e
+			LEFT JOIN actual a ON e.day = a.day
+			WHERE a.cnt IS NULL OR a.cnt < 96
+			ORDER BY e.day ASC
+			LIMIT 1`, oldest, yesterday).Scan(&gapDay)
+	}
+
+	if gapDay == nil {
+		return time.Time{}, time.Time{}, false
+	}
+
+	start = truncDay(*gapDay)
+	end = start.AddDate(0, 0, 6)
+	if end.After(yesterday) {
+		end = yesterday
+	}
+	return start, end, true
+}
+
 // findEstimatedRefreshWindow returns the next 7-day window of estimated intervals
 // to re-fetch, starting after afterDate so each run advances a cursor rather than
 // always restarting at the oldest. When no estimated windows remain after

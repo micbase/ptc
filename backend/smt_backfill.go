@@ -14,22 +14,33 @@ import (
 //
 // Strategy:
 //   - Runs once immediately on startup, then twice a day at 08:00 and 20:00.
-//   - Each run fetches the next 7-day window (fills recent gaps first, then
-//     works backwards up to 2 years).
-//   - With 24 API calls/day limit and 7-day batches, a full 2-year backfill
-//     completes in ~52 days at 2 runs/day.
+//   - Each run first fills the latest uncovered 7-day window (forward fill).
+//   - Once the forward fill is current (up to T-1), a mid-gap scan finds any
+//     day in the 2-year window with fewer than 96 intervals and fetches it.
+//   - An estimated-data refresh cycle re-fetches days still marked is_actual=false.
+//   - All three cursors advance independently so no single stuck window blocks others.
 //
 // The goroutine stops when ctx is cancelled (i.e., on server shutdown).
 func RunSMTBackfill(ctx context.Context, client *SMTClient, pool *pgxpool.Pool) {
-	// cursor advances forward through estimated windows each run so that a
-	// permanently-estimated window doesn't block refresh of more recent ones.
 	var estimatedCursor time.Time
+	var midGapCursor time.Time
 
 	doStep := func() {
-		doBackfillStep(ctx, client, pool)
-		res := doRefreshEstimatedStep(ctx, client, pool, estimatedCursor)
-		if res != nil && res.EndDate != "" {
-			t, err := time.Parse("2006-01-02", res.EndDate)
+		res := doBackfillStep(ctx, client, pool)
+		// Run mid-gap scan only when forward fill is current; otherwise the
+		// forward fill already covers the same range and we'd double-fetch.
+		if res != nil && res.AlreadyCovered {
+			midRes := doMidGapStep(ctx, client, pool, midGapCursor)
+			if midRes != nil && midRes.EndDate != "" {
+				t, err := time.Parse("2006-01-02", midRes.EndDate)
+				if err == nil {
+					midGapCursor = t
+				}
+			}
+		}
+		estRes := doRefreshEstimatedStep(ctx, client, pool, estimatedCursor)
+		if estRes != nil && estRes.EndDate != "" {
+			t, err := time.Parse("2006-01-02", estRes.EndDate)
 			if err == nil {
 				estimatedCursor = t
 			}
@@ -100,6 +111,43 @@ func doRefreshEstimatedStep(ctx context.Context, client *SMTClient, pool *pgxpoo
 	msg := fmt.Sprintf("refreshed %d intervals for %s → %s",
 		n, start.Format("2006-01-02"), end.Format("2006-01-02"))
 	log.Printf("SMT estimated refresh: %s", msg)
+	return &BackfillResult{
+		StartDate: start.Format("2006-01-02"),
+		EndDate:   end.Format("2006-01-02"),
+		Fetched:   len(intervals),
+		Upserted:  n,
+		Message:   msg,
+	}
+}
+
+// doMidGapStep finds and fetches the next 7-day window containing a day with
+// fewer than 96 intervals (missing or partial data in the middle of the covered
+// range). Uses afterDate as a cursor so repeated runs cycle through all gaps
+// rather than always restarting at the oldest incomplete day.
+func doMidGapStep(ctx context.Context, client *SMTClient, pool *pgxpool.Pool, afterDate time.Time) *BackfillResult {
+	start, end, ok := findMidGapWindow(ctx, pool, afterDate)
+	if !ok {
+		log.Printf("SMT mid-gap: no incomplete days in 2-year window")
+		return &BackfillResult{AlreadyCovered: true, Message: "no mid-gap days to fill"}
+	}
+
+	log.Printf("SMT mid-gap: filling %s → %s", start.Format("2006-01-02"), end.Format("2006-01-02"))
+
+	intervals, err := client.FetchIntervals(ctx, start, end)
+	if err != nil {
+		log.Printf("SMT mid-gap: fetch error: %v", err)
+		return &BackfillResult{Message: "fetch error: " + err.Error()}
+	}
+
+	n, err := upsertIntervals(ctx, pool, intervals)
+	if err != nil {
+		log.Printf("SMT mid-gap: db error: %v", err)
+		return &BackfillResult{Message: "db error: " + err.Error()}
+	}
+
+	msg := fmt.Sprintf("filled %d intervals for %s → %s",
+		n, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	log.Printf("SMT mid-gap: %s", msg)
 	return &BackfillResult{
 		StartDate: start.Format("2006-01-02"),
 		EndDate:   end.Format("2006-01-02"),
